@@ -1,0 +1,78 @@
+#!/bin/bash
+# mlplug — plug into metrics-lite from another device (tailnet/local network).
+#
+#   mlplug projects                        list projects
+#   mlplug metrics <project>               list metrics
+#   mlplug query <project> <metric> [secs] print recent points as ts value
+#   mlplug stream <project> [metric]       live SSE tail (Ctrl+C to stop)
+#   mlplug logs <project> [levels] [n]     recent log lines
+#   mlplug push <project> <metric> <value> one value in
+#
+# Host: --host URL or ML_HOST (default http://127.0.0.1:3100). Token: --token or ML_TOKEN.
+set -euo pipefail
+HOST="${ML_HOST:-http://127.0.0.1:3100}"
+TOKEN="${ML_TOKEN:-}"
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --token) TOKEN="$2"; shift 2 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
+CMD="${1:-}"; shift || true
+AUTH=(); [[ -n "$TOKEN" ]] && AUTH=(-H "X-API-Token: $TOKEN")
+need_curl() { command -v curl >/dev/null || { echo "curl required" >&2; exit 1; }; }
+need_curl
+
+case "$CMD" in
+  projects) curl -s "${AUTH[@]}" "$HOST/api/v1/projects" | python3 -m json.tool ;;
+  metrics)  curl -s "${AUTH[@]}" "$HOST/api/v1/metrics?project=$1" | python3 -m json.tool ;;
+  query)
+    P="$1"; M="$2"; SECS="${3:-3600}"
+    curl -s "${AUTH[@]}" "$HOST/api/v1/query?project=$P&metric=$M&from=-$SECS" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for s in d.get('series',[]):
+    lbl=','.join(f'{k}={v}' for k,v in s['labels'].items())
+    for ts,v in s['points']:
+        print(ts, v, lbl)
+"
+    ;;
+  stream)
+    P="$1"; M="${2:-}"
+    URL="$HOST/api/v1/stream?project=$P&interval=1"
+    [[ -n "$M" ]] && URL="$URL&metric=$M"
+    echo "# streaming $P ${M:+$M} from $HOST (Ctrl+C to stop)" >&2
+    curl -sN "${AUTH[@]}" "$URL" | python3 -u -c "
+import json,sys
+for line in sys.stdin:
+    line=line.rstrip()
+    if not line.startswith('data: '): continue
+    d=json.loads(line[6:])
+    lbl=','.join(f'{k}={v}' for k,v in d.get('labels',{}).items())
+    print(f\"{d['ts']} {d['metric']}{('{'+lbl+'}') if lbl else ''} = {d['value']}\")
+"
+    ;;
+  logs)
+    P="$1"; L="${2:-info,warn,error}"; N="${3:-100}"
+    curl -s "${AUTH[@]}" "$HOST/api/v1/logs?project=$P&levels=$L&limit=$N" | python3 -c "
+import json,sys,datetime
+d=json.load(sys.stdin)
+for l in d['lines']:
+    t=datetime.datetime.fromtimestamp(l['ts']).strftime('%H:%M:%S')
+    print(f\"{t} {l['level'].upper():5} {l['msg']}\")
+"
+    ;;
+  push)
+    P="$1"; M="$2"; V="$3"
+    curl -s "${AUTH[@]}" -X POST "$HOST/api/v1/push/$P" -H 'Content-Type: application/json' \
+      -d "{\"metric\":\"$M\",\"value\":$V}"
+    echo
+    ;;
+  ""|-h|--help)
+    sed -n '2,12p' "$0"
+    ;;
+  *) echo "unknown command: $CMD" >&2; sed -n '2,12p' "$0" >&2; exit 1 ;;
+esac

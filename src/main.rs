@@ -105,6 +105,125 @@ struct AppState {
     data_dir: PathBuf,
     retention_hours: i64,
     started_ts: i64,
+    layout: Arc<RwLock<Layout>>,
+}
+
+const MAX_PANELS: usize = 12;
+const MAX_PANEL_METRICS: usize = 8;
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct Panel {
+    #[serde(default)]
+    id: String,
+    /// "chart" or "logs"
+    #[serde(default = "default_panel_kind")]
+    kind: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    project: String,
+    #[serde(default)]
+    metrics: Vec<String>,
+    /// chart: raw|avg|min|max ; logs: unused
+    #[serde(default = "default_agg")]
+    agg: String,
+    /// logs: "info,warn,error" subset ; chart: unused
+    #[serde(default = "default_levels")]
+    levels: String,
+    /// logs: substring filter ; chart: unused
+    #[serde(default)]
+    q: String,
+    /// logs: tail limit ; chart: unused
+    #[serde(default = "default_log_limit")]
+    limit: u32,
+    /// "full" or "half" grid width
+    #[serde(default = "default_width")]
+    width: String,
+}
+
+fn default_panel_kind() -> String { "chart".to_string() }
+fn default_agg() -> String { "raw".to_string() }
+fn default_levels() -> String { "info,warn,error".to_string() }
+fn default_log_limit() -> u32 { 200 }
+fn default_width() -> String { "full".to_string() }
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct Layout {
+    #[serde(default)]
+    panels: Vec<Panel>,
+}
+
+fn layout_path(data_dir: &PathBuf) -> PathBuf {
+    data_dir.join("dashboards.json")
+}
+
+fn load_layout(data_dir: &PathBuf) -> Layout {
+    std::fs::read_to_string(layout_path(data_dir))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_layout(data_dir: &PathBuf, layout: &Layout) -> bool {
+    serde_json::to_string_pretty(layout)
+        .ok()
+        .and_then(|s| std::fs::write(layout_path(data_dir), s).ok())
+        .is_some()
+}
+
+/// Clamp user-supplied layout to safe bounds. Returns cleaned layout.
+fn sanitize_layout(mut layout: Layout) -> Layout {
+    layout.panels.truncate(MAX_PANELS);
+    let mut n = 0u32;
+    for p in &mut layout.panels {
+        n += 1;
+        if p.id.is_empty() || p.id.len() > 32 {
+            p.id = format!("p{n}");
+        }
+        p.kind = p.kind.to_lowercase();
+        if p.kind != "logs" {
+            p.kind = "chart".to_string();
+        }
+        p.title.truncate(80);
+        p.project.truncate(64);
+        p.metrics.truncate(MAX_PANEL_METRICS);
+        for m in &mut p.metrics {
+            m.truncate(128);
+        }
+        p.metrics.retain(|m| !m.is_empty());
+        if !["raw", "avg", "min", "max"].contains(&p.agg.as_str()) {
+            p.agg = "raw".to_string();
+        }
+        let lv: Vec<String> = p.levels.split(',').map(|x| x.trim().to_lowercase()).filter(|x| valid_level(x)).collect();
+        p.levels = if lv.is_empty() { "info".to_string() } else { lv.join(",") };
+        p.q.truncate(128);
+        p.limit = p.limit.clamp(20, 2000);
+        if p.width != "half" {
+            p.width = "full".to_string();
+        }
+    }
+    layout
+}
+
+async fn get_layout(State(st): State<AppState>) -> impl IntoResponse {
+    let l = st.layout.read().await;
+    Json(serde_json::json!({"panels": l.panels}))
+}
+
+async fn put_layout(State(st): State<AppState>, Json(body): Json<Layout>) -> Response {
+    let clean = sanitize_layout(body);
+    {
+        let mut l = st.layout.write().await;
+        *l = clean.clone();
+    }
+    if !save_layout(&st.data_dir, &clean) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"ok": false, "error": "could not persist layout"})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({"ok": true, "panels": clean.panels.len()})).into_response()
 }
 
 #[derive(Parser, Debug)]
@@ -869,6 +988,82 @@ async fn get_healthz() -> impl IntoResponse {
     Json(serde_json::json!({"ok": true}))
 }
 
+/// Live stream (SSE) so another device can plug into the data.
+/// `GET /api/v1/stream?project=p[&metric=m][&interval=1]`
+/// Emits `event: sample` with {"project","metric","labels","ts","value"} for
+/// every series (or just `metric`) once per interval seconds.
+async fn get_stream(
+    State(st): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    use axum::response::sse::{Event, Sse};
+    let project = q.get("project").cloned().unwrap_or_default();
+    let metric_filter = q.get("metric").cloned().unwrap_or_default();
+    let interval = q
+        .get("interval")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(1.0)
+        .clamp(0.25, 60.0);
+    if project.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "missing ?project="})),
+        )
+            .into_response();
+    }
+    let store = st.store.clone();
+    // unfold yields one Event per poll; keep a pending queue so a single tick
+    // can flush every series, and only sleep once the queue drains.
+    struct StreamState {
+        store: Arc<RwLock<Store>>,
+        project: String,
+        metric: String,
+        interval: f64,
+        pending: std::collections::VecDeque<axum::response::sse::Event>,
+    }
+    let initial = StreamState {
+        store,
+        project,
+        metric: metric_filter,
+        interval,
+        pending: std::collections::VecDeque::new(),
+    };
+    let stream = futures_util::stream::unfold(initial, |mut s| async move {
+        use axum::response::sse::Event;
+        if s.pending.is_empty() {
+            tokio::time::sleep(Duration::from_secs_f64(s.interval)).await;
+            let read = s.store.read().await;
+            for (k, q) in read.series.iter() {
+                if k.project != s.project {
+                    continue;
+                }
+                if !s.metric.is_empty() && k.metric != s.metric {
+                    continue;
+                }
+                if let Some((ts, v)) = q.back() {
+                    let mut lbl = serde_json::Map::new();
+                    for (lk, lv) in &k.labels {
+                        lbl.insert(lk.clone(), serde_json::Value::String(lv.clone()));
+                    }
+                    let payload = serde_json::json!({
+                        "project": k.project,
+                        "metric": k.metric,
+                        "labels": lbl,
+                        "ts": ts,
+                        "value": v,
+                    });
+                    if let Ok(ev) = Event::default().event("sample").json_data(payload) {
+                        s.pending.push_back(ev);
+                    }
+                }
+            }
+        }
+        let ev = s.pending.pop_front().unwrap_or_else(|| Event::default().comment("idle"));
+        Some((Ok::<_, std::convert::Infallible>(ev), s))
+    });
+    Sse::new(stream).into_response()
+}
+
 async fn get_index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
@@ -1047,12 +1242,14 @@ async fn main() {
     }
     let tokens = parse_tokens(&token_src);
 
+    let layout = load_layout(&args.data_dir);
     let state = AppState {
         store: Arc::new(RwLock::new(Store::default())),
         tokens,
         data_dir: args.data_dir.clone(),
         retention_hours: args.retention_hours,
         started_ts: now_ts(),
+        layout: Arc::new(RwLock::new(layout)),
     };
 
     load_snapshot(&state.store, &state.data_dir).await;
@@ -1136,6 +1333,8 @@ async fn main() {
         .route("/api/v1/push/:project", axum::routing::post(post_push))
         .route("/api/v1/logs/:project", axum::routing::post(post_logs))
         .route("/api/v1/logs", get(get_logs))
+        .route("/api/v1/layout", get(get_layout).put(put_layout))
+        .route("/api/v1/stream", get(get_stream))
         .route("/api/v1/query", get(get_query))
         .route("/api/v1/projects", get(get_projects))
         .route("/api/v1/metrics", get(get_metrics))
@@ -1262,6 +1461,36 @@ mod tests {
         assert!(parse_scrape_targets("noequals").is_empty());
         let v = parse_scrape_targets("a=http://h/m,2");
         assert_eq!(v[0].2, 5); // clamped to minimum
+    }
+
+    #[test]
+    fn layout_sanitize() {
+        let l = sanitize_layout(Layout { panels: vec![
+            Panel { kind: "CHART".into(), project: "p".into(), metrics: vec!["a".into(), "".into()], ..Default::default() },
+            Panel { kind: "bogus".into(), width: "wide".into(), ..Default::default() },
+        ]});
+        assert_eq!(l.panels.len(), 2);
+        assert_eq!(l.panels[0].kind, "chart");
+        assert_eq!(l.panels[0].metrics, vec!["a".to_string()]);
+        assert!(!l.panels[0].id.is_empty());
+        assert_eq!(l.panels[1].kind, "chart");
+        assert_eq!(l.panels[1].width, "full");
+        let many = Layout { panels: (0..30).map(|_| Panel::default()).collect() };
+        assert_eq!(sanitize_layout(many).panels.len(), MAX_PANELS);
+    }
+
+    #[test]
+    fn layout_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("ml-layout-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let l = Layout { panels: vec![
+            Panel { id: "p1".into(), kind: "logs".into(), project: "v".into(), q: "err".into(), ..Default::default() },
+        ]};
+        assert!(save_layout(&dir, &l));
+        let back = load_layout(&dir);
+        assert_eq!(back.panels.len(), 1);
+        assert_eq!(back.panels[0].q, "err");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

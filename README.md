@@ -23,7 +23,33 @@ cargo test                   # 8 unit tests
 #   pulls Prometheus exposition into a project every N seconds (or SCRAPE_TARGETS)
 ```
 
-Open **http://host:3100** → select project + metric → chart. No config needed.
+Open **http://host:3100** → a customizable board of panels. Add chart or logs
+panels, pick project/metrics per panel, toggle full/half width, reorder, remove.
+Layout is saved server-side (`data/dashboards.json`) and restored on any device.
+
+## Remote access from another device
+
+The server binds `0.0.0.0:3100`, so any device that can route to it (same LAN,
+VPN/tailnet) can read and write. Use the host's routable address:
+
+```bash
+export ML_HOST=http://<host-address>:3100        # e.g. a tailnet IP
+scripts/mlplug projects
+scripts/mlplug query myproject cpu_percent 900
+scripts/mlplug stream myproject cpu_percent      # live SSE tail
+scripts/mlplug logs myproject warn,error 100
+scripts/mlplug push myproject cpu_percent 42
+```
+
+Raw endpoints for your own clients:
+
+```bash
+curl "$ML_HOST/api/v1/query?project=myproject&metric=cpu_percent&from=-900"
+curl -N "$ML_HOST/api/v1/stream?project=myproject&interval=1"   # SSE live
+```
+
+Set `--tokens "proj:secret,..."` (or `METRICS_TOKENS`) to require
+`X-API-Token` / `?token=` per project when exposing beyond a trusted network.
 
 ## Push examples
 
@@ -107,13 +133,17 @@ curl http://host:3100/metrics   # Prometheus exposition (see below)
 
 | Endpoint | Method | Notes |
 |---|---|---|
-| `/` | GET | embedded chart UI (single HTML, Chart.js CDN + offline fallback) |
+| `/` | GET | embedded panel board UI (single HTML, ECharts CDN + offline fallback) |
 | `/healthz` | GET | `{"ok":true}` |
 | `/metrics` | GET | self + federated: `lite_up`, `lite_series_count`, `lite_push_points_total`, `lite_uptime_seconds`, `lite_push_value{project,metric,...}` |
 | `/api/v1/push/:project` | POST | JSON or Prometheus-text (auto-detect; text/plain forces text parse). Token via `X-API-Token` header or `?token=` if configured |
 | `/api/v1/query` | GET | `?project=&metric=&from=&to=` + label filters; `series` per label-set + merged `points` |
 | `/api/v1/projects` | GET | `{"projects":[...]}` |
 | `/api/v1/metrics?project=` | GET | `{"metrics":[...]}` |
+| `/api/v1/logs/:project` | POST | log lines: JSON/JSONL/plain text (level-prefix sniffed). Same gzip/token handling |
+| `/api/v1/logs` | GET | `?project=&levels=warn,error&q=<substr>&from=&to=&limit=` |
+| `/api/v1/layout` | GET/PUT | dashboard panel layout (`{"panels":[...]}`), persisted to `$DATA_DIR/dashboards.json` |
+| `/api/v1/stream` | GET | SSE live latest values: `?project=&metric=&interval=` |
 
 Storage: in-memory `RwLock<HashMap<series, VecDeque<(ts,val)>>>`, cap 50k points/series
 (oldest evicted), retention prune every 60 s (`--retention-hours`, 0 = off),
@@ -135,6 +165,14 @@ WorkingDirectory=/opt/apps/metrics-lite
 [Install]
 WantedBy=multi-user.target
 ```
+
+## Customizable dashboards
+
+The UI is a board of panels (chart or logs), persisted server-side:
+`GET/PUT /api/v1/layout`. Each panel has its own project, metrics (multi),
+aggregation, width (full/half), and order. Layout survives restarts and shows
+up on every device that opens the UI. Bad input is clamped server-side
+(max 12 panels, 8 metrics/panel, valid levels only).
 
 ## Replacing Prometheus/Grafana
 

@@ -6,349 +6,301 @@
 <title>metrics-lite</title>
 <style>
   body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-  header { padding: 12px 16px; background: #1e293b; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  header h1 { font-size: 18px; margin: 0; }
+  header { padding: 10px 16px; background: #1e293b; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 17px; margin: 0; }
   header h1 span { color: #38bdf8; }
-  select, button { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  select, button, input[type="text"] { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 5px 9px; cursor: pointer; font-size: 13px; }
   button.active { background: #0284c7; border-color: #0284c7; }
-  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
-  #cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
-  .card { background: #1e293b; border-radius: 8px; padding: 10px 14px; min-width: 180px; }
-  .card .k { font-size: 12px; color: #94a3b8; }
-  .card .v { font-size: 20px; font-weight: 700; }
-  #chartWrap { background: #1e293b; border-radius: 8px; padding: 12px; }
-  #chart { width: 100%; height: 440px; }
-  pre { background: #020617; padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 12px; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  #status { font-size: 12px; color: #94a3b8; }
-  #hint { font-size: 12px; color: #64748b; margin-top: 8px; }
-  #logpane { display: none; }
-  #logcontrols { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
-  #logcontrols input[type="text"], #logcontrols select { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; }
-  #logview { background: #020617; border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, monospace; font-size: 12px; max-height: 560px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
-  #logview .ts { color: #64748b; }
-  #logview .lv-info { color: #94a3b8; }
-  #logview .lv-warn { color: #fbbf24; }
-  #logview .lv-error { color: #f87171; font-weight: 700; }
-  #logview .lv-debug { color: #22d3ee; }
+  main { padding: 14px; }
+  #board { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel { background: #1e293b; border-radius: 8px; padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; }
+  .panel.full { grid-column: span 2; }
+  .panel.edit { outline: 1px dashed #38bdf8; }
+  .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .phead .ptitle { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .phead .pkind { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
+  .phead button { padding: 2px 7px; font-size: 12px; }
+  .pbody { min-height: 200px; }
+  .panel .chart { width: 100%; height: 300px; }
+  .logview { background: #020617; border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 12px; max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .logview .ts { color: #64748b; }
+  .lv-info { color: #94a3b8; } .lv-warn { color: #fbbf24; } .lv-error { color: #f87171; font-weight: 700; } .lv-debug { color: #22d3ee; }
+  .cards { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .card { background: #0f172a; border-radius: 6px; padding: 6px 10px; min-width: 130px; }
+  .card .k { font-size: 11px; color: #94a3b8; }
+  .card .v { font-size: 16px; font-weight: 700; }
+  .pform { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334155; font-size: 12px; }
+  .pform .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .pform label { color: #94a3b8; }
+  .pform select[multiple] { min-width: 220px; }
+  #status { font-size: 12px; color: #94a3b8; margin-left: auto; }
+  .empty { color: #64748b; padding: 24px; text-align: center; grid-column: span 2; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 </head>
 <body>
 <header>
   <h1>metrics<span>-lite</span></h1>
-  <label>project <select id="project"><option value="">--</option></select></label>
-  <label>metrics <select id="metric" multiple size="4" title="ctrl/cmd-click for overlay"></select></label>
-  <label>agg <select id="agg" title="bucket aggregation, computed in browser">
-    <option value="raw">raw</option><option value="avg">avg</option><option value="min">min</option><option value="max">max</option>
-  </select></label>
-  <span class="row" id="ranges">
-    <button data-secs="900">15m</button>
-    <button data-secs="3600" class="active">1h</button>
-    <button data-secs="21600">6h</button>
-    <button data-secs="86400">24h</button>
-    <button data-secs="0">all</button>
-  </span>
+  <button id="editToggle">edit</button>
+  <button id="addChart">+ chart</button>
+  <button id="addLogs">+ logs</button>
   <label><input type="checkbox" id="autorefresh" checked> auto 5s</label>
-  <span class="row" id="tabs">
-    <button data-view="charts" class="active">charts</button>
-    <button data-view="logs">logs</button>
-  </span>
+  <button id="saveNow" title="force save layout">save</button>
+  <button id="resetLayout" title="discard custom layout">reset</button>
   <span id="status"></span>
 </header>
 <main>
-  <div id="cards"></div>
-  <div id="chartWrap"><div id="chart"></div></div>
-  <div id="hint">hover for crosshair + values &bull; scroll to zoom &bull; drag to pan &bull; slider below for range &bull; toolbox for zoom-select / restore / save</div>
-  <div id="logpane">
-    <div id="logcontrols">
-      <label><input type="checkbox" class="lvf" value="debug"> debug</label>
-      <label><input type="checkbox" class="lvf" value="info" checked> info</label>
-      <label><input type="checkbox" class="lvf" value="warn" checked> warn</label>
-      <label><input type="checkbox" class="lvf" value="error" checked> error</label>
-      <input type="text" id="logq" placeholder="filter text…">
-      <label>lines <select id="loglimit"><option>200</option><option selected>500</option><option>1000</option><option>2000</option></select></label>
-      <label><input type="checkbox" id="logpause"> pause</label>
-    </div>
-    <div id="logview"></div>
-    <div id="hint">push via POST /api/v1/logs/&lt;project&gt; (JSON, JSONL, or plain text lines) &bull; newest at bottom</div>
-  </div>
-  <h3>Push examples</h3>
-  <pre id="snippet"></pre>
-  <h3>Series</h3>
-  <pre id="series"></pre>
+  <div id="board"></div>
 </main>
 <script>
-let chart = null;
-let rangeSecs = 3600;
+const PALETTE = ['#38bdf8','#a78bfa','#34d399','#fbbf24','#f472b6','#22d3ee','#fb7185','#a3e635'];
+let panels = [];           // persisted layout
+let editing = false;
 let timer = null;
+const charts = new Map();  // panelId -> echarts instance
+let projectsCache = [];
+let metricsCache = new Map(); // project -> [metrics]
 
-function palette(i) {
-  const c = ['#38bdf8','#a78bfa','#34d399','#fbbf24','#f472b6','#22d3ee','#fb7185','#a3e635'];
-  return c[i % c.length];
-}
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(url+' -> '+r.status); return r.json(); }
+function palette(i) { return PALETTE[i % PALETTE.length]; }
+function uid() { return 'p' + Math.random().toString(36).slice(2, 9); }
 
-function seriesLabel(s, fallback) {
-  return Object.entries(s.labels).map(([k, v]) => k + '=' + v).join(',') || fallback;
-}
+function seriesLabel(labels) { return Object.entries(labels || {}).map(([k,v]) => k+'='+v).join(','); }
 
-async function jget(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(url + ' -> ' + r.status);
-  return r.json();
-}
-
-async function loadProjects() {
-  const d = await jget('/api/v1/projects');
-  const sel = document.getElementById('project');
-  const cur = sel.value;
-  sel.innerHTML = d.projects.map(p => `<option>${p}</option>`).join('') || '<option value="">--</option>';
-  if (d.projects.includes(cur)) sel.value = cur;
-  updateSnippet();
-}
-
-function selectedMetrics() {
-  return [...document.getElementById('metric').selectedOptions].map(o => o.value);
-}
-
-async function loadMetrics() {
-  const p = document.getElementById('project').value;
-  if (!p) return;
-  const d = await jget('/api/v1/metrics?project=' + encodeURIComponent(p));
-  const sel = document.getElementById('metric');
-  const cur = new Set(selectedMetrics());
-  sel.innerHTML = d.metrics.map(m => `<option>${m}</option>`).join('') || '<option value="">--</option>';
-  [...sel.options].forEach(o => { if (cur.has(o.value)) o.selected = true; });
-  if (!selectedMetrics().length && sel.options.length) sel.options[0].selected = true;
-  updateSnippet();
-}
-
-function updateSnippet() {
-  const p = document.getElementById('project').value || 'demo';
-  const m = selectedMetrics()[0] || 'live_equity';
-  document.getElementById('snippet').textContent =
-`# JSON push
-curl -X POST http://host:3100/api/v1/push/${p} \\
-  -H 'Content-Type: application/json' \\
-  -d '{"metric":"${m}","value":14726.78,"labels":{"symbol":"XAU"}}'
-
-# Prometheus-text push
-printf 'live_up 1\\nfeed_mid{symbol="XAU"} 2650.1\\n' | \\
-  curl -X POST http://host:3100/api/v1/push/${p} \\
-    -H 'Content-Type: text/plain' --data-binary @-
-
-# Query
-curl 'http://host:3100/api/v1/query?project=${p}&metric=${m}&from=-3600'
-
-# Bulk pipe (JSONL + gzip handled server-side)
-some-producer | mlpush ${p}   # scripts/mlpush in the metrics-lite repo`;
-}
-
-function baseOption() {
-  return {
-    backgroundColor: 'transparent',
-    animation: false,
-    textStyle: { color: '#e2e8f0', fontFamily: 'system-ui, sans-serif' },
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross', label: { show: true } },
-      valueFormatter: v => (typeof v === 'number' ? v : v),
-    },
-    legend: { textStyle: { color: '#e2e8f0' } },
-    grid: { left: 64, right: 24, top: 40, bottom: 64 },
-    xAxis: { type: 'time', axisLabel: { color: '#94a3b8' } },
-    yAxis: { type: 'value', scale: true, axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: 'rgba(148,163,184,0.15)' } } },
-    dataZoom: [
-      { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 24, bottom: 8, textStyle: { color: '#94a3b8' } },
-    ],
-    toolbox: {
-      show: true,
-      right: 8,
-      iconStyle: { borderColor: '#94a3b8' },
-      feature: {
-        dataZoom: { yAxisIndex: false, title: { zoom: 'zoom-select', back: 'zoom-reset' } },
-        restore: { title: 'reset' },
-        saveAsImage: { title: 'save png', backgroundColor: '#1e293b' },
-      },
-    },
-    series: [],
-  };
-}
-
-function ensureChart() {
-  if (chart) return true;
-  if (typeof echarts === 'undefined') {
-    document.getElementById('chartWrap').innerHTML = '<p>ECharts CDN unreachable (offline?). Data still available via API. Cards above show latest values.</p>';
-    return false;
-  }
-  chart = echarts.init(document.getElementById('chart'));
-  chart.setOption(baseOption());
-  window.addEventListener('resize', () => chart && chart.resize());
-  return true;
-}
-
-// Bucket points into N time buckets with min/max/avg. All client-side: no server cost.
 function aggregate(points, mode, buckets) {
   if (mode === 'raw' || points.length < 2) return points;
-  const t0 = points[0][0], t1 = points[points.length - 1][0];
+  const t0 = points[0][0], t1 = points[points.length-1][0];
   if (t1 <= t0) return points;
   const width = (t1 - t0) / buckets;
   const acc = new Map();
   for (const [ts, v] of points) {
-    const b = Math.min(buckets - 1, Math.floor((ts - t0) / width));
+    const b = Math.min(buckets-1, Math.floor((ts-t0)/width));
     let a = acc.get(b);
-    if (!a) { a = { n: 0, sum: 0, min: v, max: v, t: t0 + (b + 0.5) * width }; acc.set(b, a); }
-    a.n++; a.sum += v; if (v < a.min) a.min = v; if (v > a.max) a.max = v;
+    if (!a) { a = { n:0, sum:0, min:v, max:v, t: t0+(b+0.5)*width }; acc.set(b, a); }
+    a.n++; a.sum += v; if (v<a.min) a.min=v; if (v>a.max) a.max=v;
   }
-  return [...acc.values()].map(a => [Math.round(a.t), mode === 'avg' ? a.sum / a.n : a[mode]]);
+  return [...acc.values()].map(a => [Math.round(a.t), mode==='avg' ? a.sum/a.n : a[mode]]);
 }
-
 function stats(points) {
   if (!points.length) return null;
-  let mn = Infinity, mx = -Infinity, sum = 0;
-  for (const [, v] of points) { if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
-  return { last: points[points.length - 1][1], min: mn, max: mx, avg: sum / points.length };
+  let mn=Infinity, mx=-Infinity, sum=0;
+  for (const [,v] of points) { if (v<mn) mn=v; if (v>mx) mx=v; sum+=v; }
+  return { last: points[points.length-1][1], min: mn, max: mx, avg: sum/points.length };
 }
 
-async function refresh(resetZoom) {
-  const p = document.getElementById('project').value;
-  const metrics = selectedMetrics();
-  if (!p || !metrics.length) { document.getElementById('status').textContent = 'select project + metric(s)'; return; }
-  const now = Math.floor(Date.now() / 1000);
-  const from = rangeSecs === 0 ? 0 : now - rangeSecs;
-  const agg = document.getElementById('agg').value;
+function rangeSecs() { return 3600; }
+
+async function saveLayout() {
+  try {
+    const r = await fetch('/api/v1/layout', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ panels }) });
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    setStatus('layout saved');
+  } catch (e) { setStatus('layout save failed: '+e.message); }
+}
+function setStatus(s) { document.getElementById('status').textContent = s + ' · ' + new Date().toLocaleTimeString(); }
+
+async function loadProjects() {
+  try { const d = await jget('/api/v1/projects'); projectsCache = d.projects || []; } catch (e) { projectsCache = []; }
+}
+async function loadMetricsFor(project) {
+  if (metricsCache.has(project)) return metricsCache.get(project);
+  try { const d = await jget('/api/v1/metrics?project='+encodeURIComponent(project)); metricsCache.set(project, d.metrics||[]); return d.metrics||[]; } catch (e) { return []; }
+}
+
+// ---------- rendering ----------
+function projectOptions(selected) {
+  const ps = new Set(projectsCache);
+  if (selected) ps.add(selected);
+  return [...ps].sort().map(p => `<option${p===selected?' selected':''}>${esc(p)}</option>`).join('');
+}
+function metricsOptions(project, selected) {
+  const chosen = new Set(selected || []);
+  const ms = new Set(metricsCache.get(project) || []);
+  chosen.forEach(m => ms.add(m));
+  return [...ms].sort().map(m => `<option value="${esc(m)}"${chosen.has(m)?' selected':''}>${esc(m)}</option>`).join('');
+}
+
+function renderBoard() {
+  const board = document.getElementById('board');
+  if (!panels.length) { board.innerHTML = '<div class="empty">No panels. Use “+ chart” or “+ logs”. Layout persists on the server.</div>'; return; }
+  board.innerHTML = '';
+  panels.forEach(p => board.appendChild(renderPanel(p)));
+}
+
+function renderPanel(p) {
+  const el = document.createElement('div');
+  el.className = 'panel' + (p.width === 'full' ? ' full' : '') + (editing ? ' edit' : '');
+  el.dataset.id = p.id;
+  el.innerHTML = `
+    <div class="phead">
+      <span class="ptitle">${esc(p.title || p.metrics[0] || p.kind)}</span>
+      <span class="pkind">${esc(p.kind)}</span>
+      <button data-act="up" title="move up">↑</button>
+      <button data-act="down" title="move down">↓</button>
+      <button data-act="width" title="toggle width">${p.width==='full'?'full':'half'}</button>
+      <button data-act="remove" title="remove">✕</button>
+    </div>
+    <div class="pbody"></div>`;
+  const body = el.querySelector('.pbody');
+  if (p.kind === 'chart') {
+    const cards = document.createElement('div'); cards.className = 'cards'; body.appendChild(cards);
+    const div = document.createElement('div'); div.className = 'chart'; div.id = 'chart-' + p.id; body.appendChild(div);
+  } else {
+    const view = document.createElement('div'); view.className = 'logview'; body.appendChild(view);
+  }
+  if (editing) body.appendChild(renderForm(p));
+  el.querySelector('.phead').addEventListener('click', e => {
+    const act = e.target.dataset.act; if (!act) return;
+    const i = panels.findIndex(x => x.id === p.id);
+    if (act === 'remove') { charts.get(p.id)?.dispose(); charts.delete(p.id); panels.splice(i,1); }
+    else if (act === 'up' && i > 0) { [panels[i-1],panels[i]] = [panels[i],panels[i-1]]; }
+    else if (act === 'down' && i < panels.length-1) { [panels[i+1],panels[i]] = [panels[i],panels[i+1]]; }
+    else if (act === 'width') { p.width = p.width === 'full' ? 'half' : 'full'; }
+    renderBoard(); saveLayout(); refreshAll();
+  });
+  return el;
+}
+
+function renderForm(p) {
+  const f = document.createElement('div'); f.className = 'pform';
+  f.innerHTML = `
+    <div class="row"><label>title</label><input type="text" data-f="title" value="${esc(p.title||'')}"></div>
+    <div class="row"><label>project</label><select data-f="project">${projectOptions(p.project)}</select>
+      <label>width</label><select data-f="width"><option value="full"${p.width==='full'?' selected':''}>full</option><option value="half"${p.width==='half'?' selected':''}>half</option></select></div>
+    ${p.kind==='chart' ? `
+      <div class="row"><label>metrics</label><select data-f="metrics" multiple size="4">${metricsOptions(p.project, p.metrics)}</select>
+        <label>agg</label><select data-f="agg">${['raw','avg','min','max'].map(a=>`<option${p.agg===a?' selected':''}>${a}</option>`).join('')}</select></div>`
+    : `
+      <div class="row"><label>levels</label><input type="text" data-f="levels" value="${esc(p.levels)}">
+        <label>filter</label><input type="text" data-f="q" value="${esc(p.q)}">
+        <label>lines</label><select data-f="limit">${[100,200,500,1000].map(n=>`<option${p.limit===n?' selected':''}>${n}</option>`).join('')}</select></div>`}`;
+  f.addEventListener('change', async e => {
+    const field = e.target.dataset.f; if (!field) return;
+    if (field === 'metrics') p.metrics = [...e.target.selectedOptions].map(o => o.value);
+    else if (field === 'limit') p.limit = parseInt(e.target.value,10);
+    else p[field] = e.target.value;
+    if (field === 'project') { await loadMetricsFor(p.project); renderBoard(); }
+    saveLayout(); refreshPanel(p);
+  });
+  return f;
+}
+
+// ---------- data refresh ----------
+async function refreshChart(p) {
+  const div = document.getElementById('chart-'+p.id);
+  if (!div || typeof echarts === 'undefined') return;
+  let chart = charts.get(p.id);
+  if (!chart) { chart = echarts.init(div); charts.set(p.id, chart); window.addEventListener('resize', () => chart.resize()); }
+  if (!p.project || !p.metrics.length) { chart.clear(); return; }
+  const now = Math.floor(Date.now()/1000), from = now - rangeSecs();
   let results;
   try {
-    results = await Promise.all(metrics.map(async m => {
-      const url = `/api/v1/query?project=${encodeURIComponent(p)}&metric=${encodeURIComponent(m)}&from=${from}&to=${now}`;
-      const d = await jget(url);
-      return { metric: m, series: d.series && d.series.length ? d.series : [{ labels: {}, points: d.points }] };
+    results = await Promise.all(p.metrics.map(async m => {
+      const d = await jget(`/api/v1/query?project=${encodeURIComponent(p.project)}&metric=${encodeURIComponent(m)}&from=${from}&to=${now}`);
+      return { m, series: d.series && d.series.length ? d.series : [{labels:{},points:d.points}] };
     }));
-  } catch (e) { document.getElementById('status').textContent = 'query error: ' + e.message; return; }
-  // flatten to overlay list with per-metric names, aggregated client-side
+  } catch (e) { return; }
+  let zoom = {};
+  try { const dz = chart.getOption().dataZoom; if (dz && dz[0] && (dz[0].start>0 || dz[0].end<100)) zoom = { start: dz[0].start, end: dz[0].end }; } catch(e){}
   const flat = [];
-  for (const { metric, series } of results) {
-    for (const s of series) {
-      const lbl = seriesLabel(s, '');
-      const pts = aggregate(s.points, agg, 200);
-      flat.push({ name: lbl ? metric + ' {' + lbl + '}' : metric, points: pts, raw: s.points });
-    }
+  for (const { m, series } of results) for (const s of series) {
+    const lbl = seriesLabel(s.labels);
+    flat.push({ name: lbl ? m+' {'+lbl+'}' : m, points: aggregate(s.points, p.agg, 200), raw: s.points });
   }
-  const totalPts = flat.reduce((n, s) => n + s.points.length, 0);
-  document.getElementById('status').textContent = `${flat.length} series, ${totalPts} pts, updated ${new Date().toLocaleTimeString()}`;
-  document.getElementById('series').textContent = flat.map(s => s.name + ' n=' + s.points.length).join('\n');
-  // cards: latest + min/max/avg over the raw window
-  const cards = flat.map(s => {
+  const cardsEl = div.parentElement.querySelector('.cards');
+  if (cardsEl) cardsEl.innerHTML = flat.slice(0,6).map(s => {
     const st = stats(s.raw);
-    const lbl = esc(s.name);
-    const detail = st ? `min ${st.min} · avg ${st.avg.toFixed(4)} · max ${st.max}` : '';
-    return `<div class="card"><div class="k">${lbl}</div><div class="v">${st ? st.last : '—'}</div><div class="k">${detail}</div></div>`;
+    return `<div class="card"><div class="k">${esc(s.name)}</div><div class="v">${st?st.last:'—'}</div><div class="k">${st?`min ${st.min} · avg ${st.avg.toFixed(3)} · max ${st.max}`:''}</div></div>`;
   }).join('');
-  document.getElementById('cards').innerHTML = cards;
-  // chart
-  if (!ensureChart()) return;
-  // preserve user zoom/pan across auto-refresh unless a range change asked for reset
-  let zoomOpt = {};
-  if (!resetZoom) {
-    try {
-      const dz = chart.getOption().dataZoom;
-      if (dz && dz[0] && (dz[0].start > 0 || dz[0].end < 100)) {
-        zoomOpt = { start: dz[0].start, end: dz[0].end };
-      }
-    } catch (e) { /* fresh chart, nothing to preserve */ }
-  }
   chart.setOption({
-    legend: { data: flat.map(s => s.name) },
-    dataZoom: [
-      { type: 'inside', xAxisIndex: 0, filterMode: 'none', ...zoomOpt },
-      { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 24, bottom: 8, textStyle: { color: '#94a3b8' }, ...zoomOpt },
-    ],
-    series: flat.map((s, i) => ({
-      name: s.name,
-      type: 'line',
-      showSymbol: false,
-      sampling: 'lttb',
-      emphasis: { focus: 'series' },
-      itemStyle: { color: palette(i) },
-      lineStyle: { color: palette(i), width: 1.5 },
-      data: s.points.map(([ts, v]) => [ts * 1000, v]),
-    })),
+    backgroundColor:'transparent', animation:false,
+    textStyle:{ color:'#e2e8f0', fontFamily:'system-ui, sans-serif' },
+    tooltip:{ trigger:'axis', axisPointer:{ type:'cross', label:{show:true} } },
+    legend:{ textStyle:{color:'#e2e8f0'}, top:0 },
+    grid:{ left:56, right:16, top:34, bottom:44 },
+    xAxis:{ type:'time', axisLabel:{color:'#94a3b8'} },
+    yAxis:{ type:'value', scale:true, axisLabel:{color:'#94a3b8'}, splitLine:{lineStyle:{color:'rgba(148,163,184,0.15)'}} },
+    dataZoom:[{type:'inside',xAxisIndex:0,...zoom},{type:'slider',xAxisIndex:0,height:20,bottom:4,textStyle:{color:'#94a3b8'},...zoom}],
+    toolbox:{ show:true, right:4, iconStyle:{borderColor:'#94a3b8'}, feature:{ restore:{title:'reset'}, saveAsImage:{title:'png', backgroundColor:'#1e293b'} } },
+    series: flat.map((s,i) => ({ name:s.name, type:'line', showSymbol:false, sampling:'lttb', emphasis:{focus:'series'},
+      itemStyle:{color:palette(i)}, lineStyle:{color:palette(i), width:1.5}, data:s.points.map(([ts,v])=>[ts*1000,v]) })),
   });
 }
 
-function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+async function refreshLogsPanel(p) {
+  const el = document.querySelector(`.panel[data-id="${p.id}"] .logview`);
+  if (!el) return;
+  const params = new URLSearchParams({ project: p.project, limit: p.limit });
+  if (p.levels) params.set('levels', p.levels);
+  if (p.q) params.set('q', p.q);
+  try {
+    const d = await jget('/api/v1/logs?'+params.toString());
+    el.innerHTML = d.lines.map(l =>
+      `<span class="ts">${new Date(l.ts*1000).toLocaleTimeString()}</span> <span class="lv-${esc(l.level)}">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.msg)}`
+    ).join('\n') || '<span class="ts">no lines</span>';
+    el.scrollTop = el.scrollHeight;
+  } catch (e) { /* keep last view */ }
+}
 
-document.getElementById('project').addEventListener('change', async () => { await loadMetrics(); await refresh(true); });
-document.getElementById('metric').addEventListener('change', () => refresh(true));
-document.getElementById('agg').addEventListener('change', () => refresh(false));
-document.getElementById('ranges').addEventListener('click', e => {
-  if (e.target.tagName !== 'BUTTON') return;
-  document.querySelectorAll('#ranges button').forEach(b => b.classList.remove('active'));
-  e.target.classList.add('active');
-  rangeSecs = parseInt(e.target.dataset.secs, 10);
-  refresh(true);
+function refreshPanel(p) { return p.kind === 'logs' ? refreshLogsPanel(p) : refreshChart(p); }
+async function refreshAll() {
+  await loadProjects();
+  await Promise.all(panels.map(refreshPanel));
+  setStatus(panels.length + ' panels');
+}
+
+document.getElementById('editToggle').addEventListener('click', e => {
+  editing = !editing;
+  e.target.classList.toggle('active', editing);
+  renderBoard(); refreshAll();
+});
+document.getElementById('addChart').addEventListener('click', async () => {
+  const project = panels[0]?.project || projectsCache[0] || '';
+  const metrics = project ? (await loadMetricsFor(project)).slice(0,1) : [];
+  panels.push({ id: uid(), kind:'chart', title:'', project, metrics, agg:'raw', levels:'', q:'', limit:200, width:'full' });
+  renderBoard(); saveLayout(); refreshAll();
+});
+document.getElementById('addLogs').addEventListener('click', () => {
+  const project = panels[0]?.project || projectsCache[0] || '';
+  panels.push({ id: uid(), kind:'logs', title:'', project, metrics:[], agg:'raw', levels:'info,warn,error', q:'', limit:200, width:'full' });
+  renderBoard(); saveLayout(); refreshAll();
+});
+document.getElementById('saveNow').addEventListener('click', saveLayout);
+document.getElementById('resetLayout').addEventListener('click', async () => {
+  if (!confirm('Discard the custom layout (panels)? Collected data is kept.')) return;
+  panels = [];
+  charts.forEach(c => c.dispose()); charts.clear();
+  renderBoard(); await saveLayout(); refreshAll();
 });
 document.getElementById('autorefresh').addEventListener('change', setupTimer);
 function setupTimer() {
   if (timer) clearInterval(timer);
-  if (document.getElementById('autorefresh').checked) timer = setInterval(tick, 5000);
+  if (document.getElementById('autorefresh').checked) timer = setInterval(refreshAll, 5000);
 }
-function tick() {
-  if (currentView === 'logs') refreshLogs();
-  else refresh(false);
-}
-
-let currentView = 'charts';
-document.getElementById('tabs').addEventListener('click', e => {
-  if (e.target.tagName !== 'BUTTON') return;
-  document.querySelectorAll('#tabs button').forEach(b => b.classList.remove('active'));
-  e.target.classList.add('active');
-  currentView = e.target.dataset.view;
-  const logs = currentView === 'logs';
-  document.getElementById('logpane').style.display = logs ? 'block' : 'none';
-  document.getElementById('chartWrap').style.display = logs ? 'none' : 'block';
-  document.getElementById('cards').style.display = logs ? 'none' : 'flex';
-  if (logs) refreshLogs();
-  else { if (chart) chart.resize(); refresh(false); }
-});
-
-function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-
-async function refreshLogs() {
-  const p = document.getElementById('project').value;
-  if (!p) { document.getElementById('status').textContent = 'select project'; return; }
-  if (document.getElementById('logpause').checked) return;
-  const levels = [...document.querySelectorAll('.lvf:checked')].map(c => c.value).join(',');
-  const q = document.getElementById('logq').value;
-  const limit = document.getElementById('loglimit').value;
-  const params = new URLSearchParams({ project: p, limit });
-  if (levels) params.set('levels', levels);
-  if (q) params.set('q', q);
-  let d;
-  try { d = await jget('/api/v1/logs?' + params.toString()); }
-  catch (e) { document.getElementById('status').textContent = 'logs error: ' + e.message; return; }
-  const view = document.getElementById('logview');
-  view.innerHTML = d.lines.map(l =>
-    `<span class="ts">${new Date(l.ts * 1000).toLocaleTimeString()}</span> <span class="lv-${esc(l.level)}">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.msg)}`
-  ).join('\n') || '<span class="ts">no lines (push via POST /api/v1/logs/' + esc(p) + ')</span>';
-  view.scrollTop = view.scrollHeight;
-  document.getElementById('status').textContent = `${d.lines.length} lines, updated ${new Date().toLocaleTimeString()}`;
-}
-document.getElementById('logq').addEventListener('input', () => refreshLogs());
-document.querySelectorAll('.lvf').forEach(c => c.addEventListener('change', () => refreshLogs()));
-document.getElementById('loglimit').addEventListener('change', () => refreshLogs());
 
 (async () => {
   await loadProjects();
-  await loadMetrics();
-  await refresh(true);
+  try {
+    const d = await jget('/api/v1/layout');
+    panels = d.panels || [];
+  } catch (e) { setStatus('layout load failed'); }
+  if (!panels.length) {
+    // first run: seed a useful board from whatever exists
+    const p0 = projectsCache[0];
+    if (p0) {
+      const ms = await loadMetricsFor(p0);
+      panels = [
+        { id: uid(), kind:'chart', title:'', project:p0, metrics: ms.slice(0,3), agg:'raw', levels:'', q:'', limit:200, width:'full' },
+        { id: uid(), kind:'logs', title:'logs', project:p0, metrics:[], agg:'raw', levels:'info,warn,error', q:'', limit:200, width:'full' },
+      ];
+      await saveLayout();
+    }
+  }
+  for (const p of panels) if (p.project) await loadMetricsFor(p.project);
+  renderBoard();
+  await refreshAll();
   setupTimer();
-  setInterval(async () => { // refresh dropdowns every 30s for new projects
-    const p = document.getElementById('project').value;
-    await loadProjects();
-    if (p) { document.getElementById('project').value = p; }
-  }, 30000);
 })();
 </script>
 </body>
