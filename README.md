@@ -23,9 +23,19 @@ cargo test                   # 8 unit tests
 #   pulls Prometheus exposition into a project every N seconds (or SCRAPE_TARGETS)
 ```
 
-Open **http://host:3100** → a customizable board of panels. Add chart or logs
-panels, pick project/metrics per panel, toggle full/half width, reorder, remove.
-Layout is saved server-side (`data/dashboards.json`) and restored on any device.
+Open **http://host:3100** → a customizable board of panels.
+
+- **Panels**: add `+ chart`, `+ logs`, or `+ both` (chart above, log tail below).
+  Each panel has its own project, multi-metric overlay, raw/min/max/avg
+  aggregation, log level/filter/limit, title, and full/half width.
+- **Always-visible controls**: the top bar edits the *selected* panel (click a
+  panel to select). Project, metrics, aggregation, and time range are one click
+  away — no edit mode to find.
+- **Drag & drop**: drag a panel header to reorder.
+- **Themes**: light/dark toggle (persisted; `?theme=light` also works).
+- **Persistence**: layout is stored server-side (`data/dashboards.json`) and
+  appears on every device; log lines persist across restarts too.
+- Click a metric in the multi-select with ctrl/cmd for overlays.
 
 ## Remote access from another device
 

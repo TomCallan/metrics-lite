@@ -20,6 +20,8 @@ use tower_http::cors::CorsLayer;
 use tracing::warn;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+// Vendored so charts work offline and never depend on a CDN being reachable.
+const ECHARTS_JS: &str = include_str!("../static/echarts.min.js");
 const MAX_POINTS_PER_SERIES: usize = 50_000;
 const MAX_LOG_LINES_PER_PROJECT: usize = 5_000;
 
@@ -32,7 +34,7 @@ struct SeriesKey {
     labels: Labels,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct LogEntry {
     ts: i64,
     level: String,
@@ -115,7 +117,7 @@ const MAX_PANEL_METRICS: usize = 8;
 struct Panel {
     #[serde(default)]
     id: String,
-    /// "chart" or "logs"
+    /// "chart" (time series), "logs" (log tail), or "both" (chart + logs stacked)
     #[serde(default = "default_panel_kind")]
     kind: String,
     #[serde(default)]
@@ -181,7 +183,7 @@ fn sanitize_layout(mut layout: Layout) -> Layout {
             p.id = format!("p{n}");
         }
         p.kind = p.kind.to_lowercase();
-        if p.kind != "logs" {
+        if !["chart", "logs", "both"].contains(&p.kind.as_str()) {
             p.kind = "chart".to_string();
         }
         p.title.truncate(80);
@@ -1068,6 +1070,14 @@ async fn get_index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
+async fn get_echarts() -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/javascript")],
+        ECHARTS_JS,
+    )
+        .into_response()
+}
+
 async fn get_prom(State(st): State<AppState>) -> Response {
     let store = st.store.read().await;
     let mut out = String::new();
@@ -1132,9 +1142,9 @@ async fn save_snapshot(store: &Arc<RwLock<Store>>, data_dir: &PathBuf) {
         return;
     }
     // group by project
-    let store = store.read().await;
+    let series_guard = store.read().await;
     let mut by_proj: HashMap<String, Vec<SnapRow>> = HashMap::new();
-    for (k, pts) in store.series.iter() {
+    for (k, pts) in series_guard.series.iter() {
         let rows = by_proj.entry(k.project.clone()).or_default();
         for (ts, v) in pts.iter() {
             rows.push(SnapRow {
@@ -1145,7 +1155,7 @@ async fn save_snapshot(store: &Arc<RwLock<Store>>, data_dir: &PathBuf) {
             });
         }
     }
-    drop(store);
+    drop(series_guard);
     for (proj, rows) in by_proj {
         let safe: String = proj
             .chars()
@@ -1175,6 +1185,25 @@ async fn save_snapshot(store: &Arc<RwLock<Store>>, data_dir: &PathBuf) {
             warn!("snapshot rename failed: {}", e);
         }
     }
+    // logs persist too: restarting the dashboard must not blank the log panels
+    let logs_by_proj: Vec<(String, Vec<LogEntry>)> = {
+        let guard = store.read().await;
+        guard
+            .logs
+            .iter()
+            .map(|(p, q)| (p.clone(), q.iter().cloned().collect()))
+            .collect()
+    };
+    for (proj, entries) in logs_by_proj {
+        let safe: String = proj
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let path = data_dir.join(format!("{}.logs.json", safe));
+        if let Ok(s) = serde_json::to_string(&entries) {
+            let _ = tokio::fs::write(&path, s).await;
+        }
+    }
 }
 
 async fn load_snapshot(store: &Arc<RwLock<Store>>, data_dir: &PathBuf) {
@@ -1184,6 +1213,30 @@ async fn load_snapshot(store: &Arc<RwLock<Store>>, data_dir: &PathBuf) {
     };
     let mut loaded = 0usize;
     use tokio::io::AsyncBufReadExt;
+    // logs snapshots use a distinct suffix so the .jsonl series loader skips them
+    let mut rd2 = match tokio::fs::read_dir(data_dir).await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    while let Ok(Some(ent)) = rd2.next_entry().await {
+        let p = ent.path();
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.ends_with(".logs.json") {
+            continue;
+        }
+        let proj = name.trim_end_matches(".logs.json").to_string();
+        if proj.is_empty() {
+            continue;
+        }
+        if let Ok(text) = tokio::fs::read_to_string(&p).await {
+            if let Ok(entries) = serde_json::from_str::<Vec<LogEntry>>(&text) {
+                let mut st = store.write().await;
+                for e in entries {
+                    st.log(&proj, e.ts, e.level, e.msg);
+                }
+            }
+        }
+    }
     while let Ok(Some(ent)) = rd.next_entry().await {
         let p = ent.path();
         if p.extension().map(|e| e == "jsonl").unwrap_or(false) {
@@ -1328,6 +1381,7 @@ async fn main() {
 
     let app: Router = Router::new()
         .route("/", get(get_index))
+        .route("/echarts.min.js", get(get_echarts))
         .route("/healthz", get(get_healthz))
         .route("/metrics", get(get_prom))
         .route("/api/v1/push/:project", axum::routing::post(post_push))
@@ -1468,13 +1522,15 @@ mod tests {
         let l = sanitize_layout(Layout { panels: vec![
             Panel { kind: "CHART".into(), project: "p".into(), metrics: vec!["a".into(), "".into()], ..Default::default() },
             Panel { kind: "bogus".into(), width: "wide".into(), ..Default::default() },
+            Panel { kind: "BOTH".into(), ..Default::default() },
         ]});
-        assert_eq!(l.panels.len(), 2);
+        assert_eq!(l.panels.len(), 3);
         assert_eq!(l.panels[0].kind, "chart");
         assert_eq!(l.panels[0].metrics, vec!["a".to_string()]);
         assert!(!l.panels[0].id.is_empty());
         assert_eq!(l.panels[1].kind, "chart");
         assert_eq!(l.panels[1].width, "full");
+        assert_eq!(l.panels[2].kind, "both");
         let many = Layout { panels: (0..30).map(|_| Panel::default()).collect() };
         assert_eq!(sanitize_layout(many).panels.len(), MAX_PANELS);
     }

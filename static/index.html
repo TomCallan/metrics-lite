@@ -1,307 +1,454 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>metrics-lite</title>
 <style>
-  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-  header { padding: 10px 16px; background: #1e293b; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; position: sticky; top: 0; z-index: 10; }
-  header h1 { font-size: 17px; margin: 0; }
-  header h1 span { color: #38bdf8; }
-  select, button, input[type="text"] { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 5px 9px; cursor: pointer; font-size: 13px; }
-  button.active { background: #0284c7; border-color: #0284c7; }
-  main { padding: 14px; }
-  #board { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .panel { background: #1e293b; border-radius: 8px; padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; }
+  :root[data-theme="dark"] {
+    --bg:#0e1116; --surface:#161b22; --surface2:#1d242d; --surface3:#242c36;
+    --text:#e6edf3; --muted:#9aa7b4; --outline:#2b333d; --primary:#58a6ff; --on-primary:#04121f;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --dbg:#39c5cf; --grid:rgba(154,167,180,.14);
+  }
+  :root[data-theme="light"] {
+    --bg:#f4f6f9; --surface:#ffffff; --surface2:#eef1f5; --surface3:#e4e9ef;
+    --text:#1a1f26; --muted:#5a6673; --outline:#d3dae2; --primary:#0b6bcb; --on-primary:#ffffff;
+    --ok:#1a7f37; --warn:#9a6700; --err:#cf222e; --dbg:#0d7d86; --grid:rgba(90,102,115,.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: Roboto, system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 14px;
+  }
+  button, select, input[type="text"] {
+    font: inherit; color: var(--text); background: var(--surface2);
+    border: 1px solid var(--outline); border-radius: 20px; padding: 6px 14px; cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+  }
+  button:hover, select:hover { background: var(--surface3); }
+  button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.icon { padding: 6px 9px; border-radius: 50%; }
+  button.active { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+  input[type="text"] { border-radius: 8px; cursor: text; min-width: 140px; }
+  select[multiple] { border-radius: 10px; padding: 4px 8px; }
+  #appbar {
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--outline);
+    position:sticky; top:0; z-index:20;
+  }
+  #appbar .brand { font-weight:600; letter-spacing:.2px; margin-right:4px; }
+  #appbar .brand span { color:var(--primary); }
+  .sep { width:1px; height:24px; background:var(--outline); margin:0 2px; }
+  #hint { color:var(--muted); font-size:12px; }
+  #status { margin-left:auto; color:var(--muted); font-size:12px; }
+  main { padding:16px; }
+  #board { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:14px; }
+  .panel {
+    background:var(--surface); border:1px solid var(--outline); border-radius:12px;
+    display:flex; flex-direction:column; min-width:0; overflow:hidden;
+    box-shadow:0 1px 2px rgba(0,0,0,.12);
+  }
   .panel.full { grid-column: span 2; }
-  .panel.edit { outline: 1px dashed #38bdf8; }
-  .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-  .phead .ptitle { font-weight: 600; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .phead .pkind { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
-  .phead button { padding: 2px 7px; font-size: 12px; }
-  .pbody { min-height: 200px; }
-  .panel .chart { width: 100%; height: 300px; }
-  .logview { background: #020617; border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 12px; max-height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
-  .logview .ts { color: #64748b; }
-  .lv-info { color: #94a3b8; } .lv-warn { color: #fbbf24; } .lv-error { color: #f87171; font-weight: 700; } .lv-debug { color: #22d3ee; }
-  .cards { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-  .card { background: #0f172a; border-radius: 6px; padding: 6px 10px; min-width: 130px; }
-  .card .k { font-size: 11px; color: #94a3b8; }
-  .card .v { font-size: 16px; font-weight: 700; }
-  .pform { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #334155; font-size: 12px; }
-  .pform .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .pform label { color: #94a3b8; }
-  .pform select[multiple] { min-width: 220px; }
-  #status { font-size: 12px; color: #94a3b8; margin-left: auto; }
-  .empty { color: #64748b; padding: 24px; text-align: center; grid-column: span 2; }
+  .panel.selected { border-color: var(--primary); }
+  .panel.dragging { opacity:.45; }
+  .panel.drop-before { box-shadow: 0 -3px 0 var(--primary); }
+  .phead { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--outline); }
+  .phead .grip { cursor:grab; color:var(--muted); display:flex; }
+  .phead .pname { font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chip { font-size:11px; color:var(--muted); border:1px solid var(--outline); border-radius:20px; padding:1px 8px; }
+  .phead button { padding:3px 8px; border-radius:8px; background:transparent; border-color:transparent; }
+  .phead button:hover { background:var(--surface3); }
+  .pbody { padding:10px 12px 12px; min-width:0; }
+  .chart { width:100%; height:280px; }
+  .chart.tall { height:340px; }
+  .logview {
+    background:var(--bg); border:1px solid var(--outline); border-radius:8px; padding:8px 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:12px;
+    max-height:300px; overflow-y:auto; white-space:pre-wrap; word-break:break-word;
+  }
+  .logview .ts { color:var(--muted); }
+  .lv-info{color:var(--muted);} .lv-warn{color:var(--warn);} .lv-error{color:var(--err);font-weight:600;} .lv-debug{color:var(--dbg);}
+  .cards { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .card { background:var(--surface2); border-radius:8px; padding:6px 10px; min-width:132px; }
+  .card .k { font-size:11px; color:var(--muted); }
+  .card .v { font-size:16px; font-weight:600; }
+  .empty { color:var(--muted); text-align:center; padding:40px; grid-column:span 2; }
+  /* drawer */
+  #scrim { position:fixed; inset:0; background:rgba(0,0,0,.4); opacity:0; pointer-events:none; transition:opacity .18s; z-index:30; }
+  #scrim.open { opacity:1; pointer-events:auto; }
+  #drawer {
+    position:fixed; top:0; right:0; height:100%; width:360px; max-width:92vw;
+    background:var(--surface); border-left:1px solid var(--outline);
+    transform:translateX(100%); transition:transform .2s ease; z-index:31;
+    display:flex; flex-direction:column;
+  }
+  #drawer.open { transform:translateX(0); }
+  #drawer .dhead { padding:14px 16px; border-bottom:1px solid var(--outline); font-weight:600; display:flex; align-items:center; }
+  #drawer .dbody { padding:14px 16px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+  .field { display:flex; flex-direction:column; gap:5px; }
+  .field > label { color:var(--muted); font-size:12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:12px; }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--surface3);
+    color:var(--text); padding:8px 16px; border-radius:20px; opacity:0; transition:.2s; z-index:40; border:1px solid var(--outline); }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script src="/echarts.min.js"></script>
 </head>
 <body>
-<header>
-  <h1>metrics<span>-lite</span></h1>
-  <button id="editToggle">edit</button>
-  <button id="addChart">+ chart</button>
+<div id="appbar">
+  <span class="brand">metrics<span>-lite</span></span>
+  <label class="muted">project</label>
+  <select id="projectSel" title="project for the selected panel"></select>
+  <label class="muted">metric</label>
+  <select id="metricSel" multiple size="1" title="ctrl/cmd-click for multiple"></select>
+  <span class="sep"></span>
+  <span class="row" id="ranges">
+    <button data-secs="900">15m</button>
+    <button data-secs="3600" class="active">1h</button>
+    <button data-secs="21600">6h</button>
+    <button data-secs="86400">24h</button>
+    <button data-secs="0">all</button>
+  </span>
+  <select id="aggSel" title="aggregation"><option value="raw">raw</option><option value="avg">avg</option><option value="min">min</option><option value="max">max</option></select>
+  <span class="sep"></span>
+  <button id="addChart" class="primary">+ chart</button>
   <button id="addLogs">+ logs</button>
-  <label><input type="checkbox" id="autorefresh" checked> auto 5s</label>
-  <button id="saveNow" title="force save layout">save</button>
-  <button id="resetLayout" title="discard custom layout">reset</button>
+  <button id="addBoth">+ both</button>
+  <span class="sep"></span>
+  <label class="row muted"><input type="checkbox" id="autoRefresh" checked> auto</label>
+  <button id="themeBtn" class="icon" title="toggle light/dark"></button>
   <span id="status"></span>
-</header>
+</div>
 <main>
+  <div id="hint" class="muted">Click a panel to select it, then use the controls above. Drag panel headers to reorder. ⚙ opens panel settings.</div>
   <div id="board"></div>
 </main>
+<div id="scrim"></div>
+<aside id="drawer"><div class="dhead">Panel settings <button id="drawerClose" class="icon" style="margin-left:auto">✕</button></div><div class="dbody"></div></aside>
+<div id="toast" class="toast"></div>
 <script>
-const PALETTE = ['#38bdf8','#a78bfa','#34d399','#fbbf24','#f472b6','#22d3ee','#fb7185','#a3e635'];
-let panels = [];           // persisted layout
-let editing = false;
+const PALETTE = ['#58a6ff','#bc8cff','#3fb950','#d29922','#f778ba','#39c5cf','#ff7b72','#a5d6ff'];
+const ICON = {
+  gear:'<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9.4 4l1.9 1.5-1.9 3.3-2.3-.8a7.6 7.6 0 01-1.6.9l-.4 2.4h-3.8l-.4-2.4a7.6 7.6 0 01-1.6-.9l-2.3.8L4.7 13.5 6.6 12 4.7 10.5l1.9-3.3 2.3.8c.5-.4 1-.7 1.6-.9l.4-2.4h3.8l.4 2.4c.6.2 1.1.5 1.6.9l2.3-.8 1.9 3.3L18.6 12z"/></svg>',
+  grip:'<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M9 6h2v2H9V6zm4 0h2v2h-2V6zM9 11h2v2H9v-2zm4 0h2v2h-2v-2zM9 16h2v2H9v-2zm4 0h2v2h-2v-2z"/></svg>',
+  x:'<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.7L12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>',
+  sun:'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7a5 5 0 100 10 5 5 0 000-10zM11 1h2v3h-2V1zm0 19h2v3h-2v-3zM1 11h3v2H1v-2zm19 0h3v2h-3v-2zM3.5 4.9l1.4-1.4 2.1 2.1-1.4 1.4-2.1-2.1zm13.5 13.5l1.4-1.4 2.1 2.1-1.4 1.4-2.1-2.1zM18.6 3.5l1.4 1.4-2.1 2.1-1.4-1.4 2.1-2.1zM5.1 17l1.4 1.4-2.1 2.1-1.4-1.4L5.1 17z"/></svg>',
+  moon:'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12.7 2a8.5 8.5 0 108.6 12.3A7 7 0 0112.7 2z"/></svg>',
+};
+
+const state = {
+  panels: [],
+  selected: null,
+  rangeSecs: 3600,
+  theme: new URLSearchParams(location.search).get('theme') || localStorage.getItem('ml-theme') || 'dark',
+  projects: [],
+  metricsByProject: new Map(),
+};
+const charts = new Map();
 let timer = null;
-const charts = new Map();  // panelId -> echarts instance
-let projectsCache = [];
-let metricsCache = new Map(); // project -> [metrics]
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error(url+' -> '+r.status); return r.json(); }
-function palette(i) { return PALETTE[i % PALETTE.length]; }
-function uid() { return 'p' + Math.random().toString(36).slice(2, 9); }
+const $ = id => document.getElementById(id);
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1600); }
+function setStatus(s){ $('status').textContent = s; }
+async function jget(url){ const r = await fetch(url); if(!r.ok) throw new Error(url+' -> '+r.status); return r.json(); }
+function uid(){ return 'p'+Math.random().toString(36).slice(2,9); }
+function palette(i){ return PALETTE[i%PALETTE.length]; }
+function labelOf(labels){ return Object.entries(labels||{}).map(([k,v])=>k+'='+v).join(','); }
 
-function seriesLabel(labels) { return Object.entries(labels || {}).map(([k,v]) => k+'='+v).join(','); }
+/* ---------- theme ---------- */
+function applyTheme(){
+  document.documentElement.dataset.theme = state.theme;
+  $('themeBtn').innerHTML = state.theme==='dark' ? ICON.sun : ICON.moon;
+  charts.forEach(c => c.dispose()); charts.clear();
+  renderBoard(); refreshAll();
+}
+$('themeBtn').onclick = () => { state.theme = state.theme==='dark'?'light':'dark'; localStorage.setItem('ml-theme', state.theme); applyTheme(); };
 
-function aggregate(points, mode, buckets) {
-  if (mode === 'raw' || points.length < 2) return points;
-  const t0 = points[0][0], t1 = points[points.length-1][0];
-  if (t1 <= t0) return points;
-  const width = (t1 - t0) / buckets;
-  const acc = new Map();
-  for (const [ts, v] of points) {
-    const b = Math.min(buckets-1, Math.floor((ts-t0)/width));
-    let a = acc.get(b);
-    if (!a) { a = { n:0, sum:0, min:v, max:v, t: t0+(b+0.5)*width }; acc.set(b, a); }
-    a.n++; a.sum += v; if (v<a.min) a.min=v; if (v>a.max) a.max=v;
+/* ---------- data helpers ---------- */
+async function loadProjects(){
+  try { const d = await jget('/api/v1/projects'); state.projects = d.projects||[]; } catch(e){ state.projects=[]; }
+}
+async function metricsFor(project){
+  if(!project) return [];
+  if(state.metricsByProject.has(project)) return state.metricsByProject.get(project);
+  try { const d = await jget('/api/v1/metrics?project='+encodeURIComponent(project)); state.metricsByProject.set(project, d.metrics||[]); return d.metrics||[]; }
+  catch(e){ return []; }
+}
+function aggregate(points, mode, buckets){
+  if(mode==='raw'||points.length<2) return points;
+  const t0=points[0][0], t1=points[points.length-1][0];
+  if(t1<=t0) return points;
+  const w=(t1-t0)/buckets, acc=new Map();
+  for(const [ts,v] of points){
+    const b=Math.min(buckets-1, Math.floor((ts-t0)/w));
+    let a=acc.get(b); if(!a){a={n:0,sum:0,min:v,max:v,t:t0+(b+0.5)*w}; acc.set(b,a);}
+    a.n++; a.sum+=v; if(v<a.min)a.min=v; if(v>a.max)a.max=v;
   }
-  return [...acc.values()].map(a => [Math.round(a.t), mode==='avg' ? a.sum/a.n : a[mode]]);
+  return [...acc.values()].map(a=>[Math.round(a.t), mode==='avg'?a.sum/a.n:a[mode]]);
 }
-function stats(points) {
-  if (!points.length) return null;
-  let mn=Infinity, mx=-Infinity, sum=0;
-  for (const [,v] of points) { if (v<mn) mn=v; if (v>mx) mx=v; sum+=v; }
-  return { last: points[points.length-1][1], min: mn, max: mx, avg: sum/points.length };
-}
-
-function rangeSecs() { return 3600; }
-
-async function saveLayout() {
-  try {
-    const r = await fetch('/api/v1/layout', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ panels }) });
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    setStatus('layout saved');
-  } catch (e) { setStatus('layout save failed: '+e.message); }
-}
-function setStatus(s) { document.getElementById('status').textContent = s + ' · ' + new Date().toLocaleTimeString(); }
-
-async function loadProjects() {
-  try { const d = await jget('/api/v1/projects'); projectsCache = d.projects || []; } catch (e) { projectsCache = []; }
-}
-async function loadMetricsFor(project) {
-  if (metricsCache.has(project)) return metricsCache.get(project);
-  try { const d = await jget('/api/v1/metrics?project='+encodeURIComponent(project)); metricsCache.set(project, d.metrics||[]); return d.metrics||[]; } catch (e) { return []; }
+function stats(points){
+  if(!points.length) return null;
+  let mn=Infinity,mx=-Infinity,sum=0;
+  for(const [,v] of points){ if(v<mn)mn=v; if(v>mx)mx=v; sum+=v; }
+  return {last:points[points.length-1][1], min:mn, max:mx, avg:sum/points.length};
 }
 
-// ---------- rendering ----------
-function projectOptions(selected) {
-  const ps = new Set(projectsCache);
-  if (selected) ps.add(selected);
-  return [...ps].sort().map(p => `<option${p===selected?' selected':''}>${esc(p)}</option>`).join('');
+/* ---------- layout IO ---------- */
+async function saveLayout(){
+  try{
+    const r = await fetch('/api/v1/layout',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({panels:state.panels})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+  }catch(e){ toast('layout save failed: '+e.message); }
 }
-function metricsOptions(project, selected) {
-  const chosen = new Set(selected || []);
-  const ms = new Set(metricsCache.get(project) || []);
-  chosen.forEach(m => ms.add(m));
-  return [...ms].sort().map(m => `<option value="${esc(m)}"${chosen.has(m)?' selected':''}>${esc(m)}</option>`).join('');
-}
+function panelById(id){ return state.panels.find(p=>p.id===id); }
+function selectedPanel(){ return panelById(state.selected); }
 
-function renderBoard() {
-  const board = document.getElementById('board');
-  if (!panels.length) { board.innerHTML = '<div class="empty">No panels. Use “+ chart” or “+ logs”. Layout persists on the server.</div>'; return; }
-  board.innerHTML = '';
-  panels.forEach(p => board.appendChild(renderPanel(p)));
-}
-
-function renderPanel(p) {
-  const el = document.createElement('div');
-  el.className = 'panel' + (p.width === 'full' ? ' full' : '') + (editing ? ' edit' : '');
-  el.dataset.id = p.id;
-  el.innerHTML = `
-    <div class="phead">
-      <span class="ptitle">${esc(p.title || p.metrics[0] || p.kind)}</span>
-      <span class="pkind">${esc(p.kind)}</span>
-      <button data-act="up" title="move up">↑</button>
-      <button data-act="down" title="move down">↓</button>
-      <button data-act="width" title="toggle width">${p.width==='full'?'full':'half'}</button>
-      <button data-act="remove" title="remove">✕</button>
-    </div>
-    <div class="pbody"></div>`;
-  const body = el.querySelector('.pbody');
-  if (p.kind === 'chart') {
-    const cards = document.createElement('div'); cards.className = 'cards'; body.appendChild(cards);
-    const div = document.createElement('div'); div.className = 'chart'; div.id = 'chart-' + p.id; body.appendChild(div);
+/* ---------- top bar binding (always visible, edits selected panel) ---------- */
+function renderTopbar(){
+  const p = selectedPanel();
+  const projSel = $('projectSel');
+  const names = new Set(state.projects);
+  if(p && p.project) names.add(p.project);
+  projSel.innerHTML = p
+    ? [...names].sort().map(n=>'<option'+(n===p.project?' selected':'')+'>'+esc(n)+'</option>').join('') || '<option value="">no projects yet</option>'
+    : '<option value="">— select a panel —</option>';
+  projSel.disabled = !p;
+  const msel = $('metricSel');
+  if(p){
+    const avail = new Set(state.metricsByProject.get(p.project)||[]);
+    (p.metrics||[]).forEach(m=>avail.add(m));
+    const chosen = new Set(p.metrics||[]);
+    msel.innerHTML = [...avail].sort().map(m=>'<option value="'+esc(m)+'"'+(chosen.has(m)?' selected':'')+'>'+esc(m)+'</option>').join('') || '<option value="">no metrics</option>';
+    msel.disabled = false;
+    $('aggSel').value = p.agg || 'raw';
+    $('aggSel').disabled = false;
   } else {
-    const view = document.createElement('div'); view.className = 'logview'; body.appendChild(view);
+    msel.innerHTML = '<option value="">—</option>'; msel.disabled = true; $('aggSel').disabled = true;
   }
-  if (editing) body.appendChild(renderForm(p));
-  el.querySelector('.phead').addEventListener('click', e => {
-    const act = e.target.dataset.act; if (!act) return;
-    const i = panels.findIndex(x => x.id === p.id);
-    if (act === 'remove') { charts.get(p.id)?.dispose(); charts.delete(p.id); panels.splice(i,1); }
-    else if (act === 'up' && i > 0) { [panels[i-1],panels[i]] = [panels[i],panels[i-1]]; }
-    else if (act === 'down' && i < panels.length-1) { [panels[i+1],panels[i]] = [panels[i],panels[i+1]]; }
-    else if (act === 'width') { p.width = p.width === 'full' ? 'half' : 'full'; }
-    renderBoard(); saveLayout(); refreshAll();
+  document.querySelectorAll('#ranges button').forEach(b=>b.classList.toggle('active', parseInt(b.dataset.secs,10)===state.rangeSecs));
+}
+$('projectSel').onchange = async e => {
+  const p = selectedPanel(); if(!p) return;
+  p.project = e.target.value; p.metrics = [];
+  await metricsFor(p.project);
+  renderTopbar(); renderBoard(); refreshAll(); saveLayout();
+};
+$('metricSel').onchange = () => {
+  const p = selectedPanel(); if(!p) return;
+  p.metrics = [...$('metricSel').selectedOptions].map(o=>o.value).filter(Boolean);
+  renderBoard(); refreshAll(); saveLayout();
+};
+$('aggSel').onchange = () => { const p=selectedPanel(); if(!p) return; p.agg=$('aggSel').value; refreshPanel(p); saveLayout(); };
+$('ranges').onclick = e => {
+  if(e.target.tagName!=='BUTTON') return;
+  state.rangeSecs = parseInt(e.target.dataset.secs,10);
+  renderTopbar(); refreshAll();
+};
+
+/* ---------- boards & panels ---------- */
+function addPanel(kind){
+  const src = selectedPanel();
+  const project = src?.project || state.projects[0] || '';
+  const metrics = (src?.metrics || []).slice(0, kind==='logs'?0:2);
+  const p = { id:uid(), kind, title:'', project, metrics, agg:'raw', levels:'info,warn,error', q:'', limit:200, width:'full' };
+  state.panels.push(p);
+  state.selected = p.id;
+  if(project) metricsFor(project).then(()=>{ renderTopbar(); if(p.kind!=='logs'&&!p.metrics.length&&(state.metricsByProject.get(project)||[]).length){ p.metrics=[state.metricsByProject.get(project)[0]]; renderBoard(); refreshPanel(p);} });
+  renderBoard(); renderTopbar(); refreshAll(); saveLayout();
+}
+$('addChart').onclick = ()=>addPanel('chart');
+$('addLogs').onclick = ()=>addPanel('logs');
+$('addBoth').onclick = ()=>addPanel('both');
+
+function renderBoard(){
+  const b = $('board');
+  if(!state.panels.length){
+    b.innerHTML = '<div class="empty">No panels yet. Use <b>+ chart</b>, <b>+ logs</b> or <b>+ both</b> above.</div>';
+    return;
+  }
+  b.innerHTML='';
+  state.panels.forEach(p=>b.appendChild(renderPanel(p)));
+}
+
+function renderPanel(p){
+  const el = document.createElement('div');
+  el.className='panel'+(p.width==='full'?' full':'')+(state.selected===p.id?' selected':'');
+  el.dataset.id=p.id;
+  const title = p.title || (p.kind==='logs' ? 'logs' : (p.metrics||[]).join(', ') || 'panel');
+  el.innerHTML =
+    '<div class="phead">'+
+      '<span class="grip" draggable="true" title="drag to reorder">'+ICON.grip+'</span>'+
+      '<span class="pname">'+esc(title)+'</span>'+
+      '<span class="chip">'+esc(p.project||'—')+'</span>'+
+      '<span class="chip">'+esc(p.kind)+'</span>'+
+      '<button class="cfg" title="panel settings">'+ICON.gear+'</button>'+
+      '<button class="rm" title="remove">'+ICON.x+'</button>'+
+    '</div><div class="pbody"></div>';
+  const body = el.querySelector('.pbody');
+  if(p.kind==='chart'||p.kind==='both'){
+    const cards=document.createElement('div'); cards.className='cards'; body.appendChild(cards);
+    const c=document.createElement('div'); c.className='chart'+(p.kind==='both'?'':' tall'); c.id='chart-'+p.id; body.appendChild(c);
+  }
+  if(p.kind==='logs'||p.kind==='both'){
+    const lv=document.createElement('div'); lv.className='logview'; lv.id='logs-'+p.id; lv.style.marginTop=p.kind==='both'?'10px':'0'; body.appendChild(lv);
+  }
+  el.addEventListener('click', ()=>{ if(state.selected!==p.id){ state.selected=p.id; renderBoard(); renderTopbar(); } });
+  el.querySelector('.rm').onclick = ev => {
+    ev.stopPropagation();
+    charts.get(p.id)?.dispose(); charts.delete(p.id);
+    state.panels = state.panels.filter(x=>x.id!==p.id);
+    if(state.selected===p.id) state.selected = state.panels[0]?.id||null;
+    renderBoard(); renderTopbar(); saveLayout();
+  };
+  el.querySelector('.cfg').onclick = ev => { ev.stopPropagation(); state.selected=p.id; renderBoard(); renderTopbar(); openDrawer(p); };
+  // drag & drop
+  const grip = el.querySelector('.grip');
+  grip.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain', p.id); el.classList.add('dragging'); });
+  grip.addEventListener('dragend', ()=>el.classList.remove('dragging'));
+  el.addEventListener('dragover', e=>{ e.preventDefault(); el.classList.add('drop-before'); });
+  el.addEventListener('dragleave', ()=>el.classList.remove('drop-before'));
+  el.addEventListener('drop', e=>{
+    e.preventDefault(); el.classList.remove('drop-before');
+    const srcId = e.dataTransfer.getData('text/plain');
+    if(!srcId||srcId===p.id) return;
+    const from = state.panels.findIndex(x=>x.id===srcId);
+    const to = state.panels.findIndex(x=>x.id===p.id);
+    if(from<0||to<0) return;
+    const [moved] = state.panels.splice(from,1);
+    state.panels.splice(to,0,moved);
+    renderBoard(); saveLayout();
   });
   return el;
 }
 
-function renderForm(p) {
-  const f = document.createElement('div'); f.className = 'pform';
-  f.innerHTML = `
-    <div class="row"><label>title</label><input type="text" data-f="title" value="${esc(p.title||'')}"></div>
-    <div class="row"><label>project</label><select data-f="project">${projectOptions(p.project)}</select>
-      <label>width</label><select data-f="width"><option value="full"${p.width==='full'?' selected':''}>full</option><option value="half"${p.width==='half'?' selected':''}>half</option></select></div>
-    ${p.kind==='chart' ? `
-      <div class="row"><label>metrics</label><select data-f="metrics" multiple size="4">${metricsOptions(p.project, p.metrics)}</select>
-        <label>agg</label><select data-f="agg">${['raw','avg','min','max'].map(a=>`<option${p.agg===a?' selected':''}>${a}</option>`).join('')}</select></div>`
-    : `
-      <div class="row"><label>levels</label><input type="text" data-f="levels" value="${esc(p.levels)}">
-        <label>filter</label><input type="text" data-f="q" value="${esc(p.q)}">
-        <label>lines</label><select data-f="limit">${[100,200,500,1000].map(n=>`<option${p.limit===n?' selected':''}>${n}</option>`).join('')}</select></div>`}`;
-  f.addEventListener('change', async e => {
-    const field = e.target.dataset.f; if (!field) return;
-    if (field === 'metrics') p.metrics = [...e.target.selectedOptions].map(o => o.value);
-    else if (field === 'limit') p.limit = parseInt(e.target.value,10);
-    else p[field] = e.target.value;
-    if (field === 'project') { await loadMetricsFor(p.project); renderBoard(); }
-    saveLayout(); refreshPanel(p);
-  });
-  return f;
+/* ---------- drawer (panel settings) ---------- */
+function openDrawer(p){
+  $('scrim').classList.add('open'); $('drawer').classList.add('open');
+  const d = $('drawer').querySelector('.dbody');
+  const projOpts = (()=>{ const s=new Set(state.projects); if(p.project) s.add(p.project);
+    return [...s].sort().map(n=>'<option'+(n===p.project?' selected':'')+'>'+esc(n)+'</option>').join(''); })();
+  const metOpts = (()=>{ const s=new Set(state.metricsByProject.get(p.project)||[]); (p.metrics||[]).forEach(m=>s.add(m));
+    const ch=new Set(p.metrics||[]);
+    return [...s].sort().map(m=>'<option value="'+esc(m)+'"'+(ch.has(m)?' selected':'')+'>'+esc(m)+'</option>').join(''); })();
+  d.innerHTML =
+    '<div class="field"><label>title</label><input type="text" id="dTitle" value="'+esc(p.title)+'" placeholder="auto"></div>'+
+    '<div class="field"><label>type</label><select id="dKind">'+
+      ['chart','logs','both'].map(k=>'<option'+(p.kind===k?' selected':'')+'>'+k+'</option>').join('')+'</select></div>'+
+    '<div class="field"><label>project</label><select id="dProject">'+projOpts+'</select></div>'+
+    '<div class="field"><label>metrics (ctrl/cmd-click)</label><select id="dMetrics" multiple size="6">'+metOpts+'</select></div>'+
+    '<div class="field"><label>aggregation (chart)</label><select id="dAgg">'+
+      ['raw','avg','min','max'].map(a=>'<option'+(p.agg===a?' selected':'')+'>'+a+'</option>').join('')+'</select></div>'+
+    '<div class="field"><label>log levels</label><input type="text" id="dLevels" value="'+esc(p.levels)+'"></div>'+
+    '<div class="field"><label>log filter text</label><input type="text" id="dQ" value="'+esc(p.q)+'"></div>'+
+    '<div class="field"><label>log lines</label><select id="dLimit">'+[100,200,500,1000].map(n=>'<option'+(p.limit===n?' selected':'')+'>'+n+'</option>').join('')+'</select></div>'+
+    '<div class="field"><label>width</label><select id="dWidth"><option value="full"'+(p.width==='full'?' selected':'')+'>full</option><option value="half"'+(p.width==='half'?' selected':'')+'>half</option></select></div>';
+  const bind=(id,field,fn)=>{ $(id).onchange=e=>{ p[field]=fn?fn(e.target):e.target.value; renderBoard(); renderTopbar(); refreshPanel(p); saveLayout(); }; };
+  bind('dTitle','title'); bind('dKind','kind'); bind('dLevels','levels'); bind('dQ','q'); bind('dAgg','agg');
+  bind('dWidth','width');
+  bind('dLimit','limit', t=>parseInt(t.value,10));
+  $('dMetrics').onchange = e => { p.metrics=[...e.target.selectedOptions].map(o=>o.value); renderBoard(); renderTopbar(); refreshPanel(p); saveLayout(); };
+  $('dProject').onchange = async e => { p.project=e.target.value; p.metrics=[]; await metricsFor(p.project); renderBoard(); renderTopbar(); openDrawer(p); refreshPanel(p); saveLayout(); };
 }
+function closeDrawer(){ $('scrim').classList.remove('open'); $('drawer').classList.remove('open'); }
+$('scrim').onclick = closeDrawer; $('drawerClose').onclick = closeDrawer;
 
-// ---------- data refresh ----------
-async function refreshChart(p) {
-  const div = document.getElementById('chart-'+p.id);
-  if (!div || typeof echarts === 'undefined') return;
+/* ---------- refresh ---------- */
+async function refreshChart(p){
+  const div = $('chart-'+p.id);
+  if(!div || typeof echarts==='undefined') return;
   let chart = charts.get(p.id);
-  if (!chart) { chart = echarts.init(div); charts.set(p.id, chart); window.addEventListener('resize', () => chart.resize()); }
-  if (!p.project || !p.metrics.length) { chart.clear(); return; }
-  const now = Math.floor(Date.now()/1000), from = now - rangeSecs();
+  if(!chart){ chart = echarts.init(div); charts.set(p.id, chart); }
+  if(!p.project || !(p.metrics||[]).length){ chart.clear(); return; }
+  const now=Math.floor(Date.now()/1000), from = state.rangeSecs===0?0:now-state.rangeSecs;
   let results;
-  try {
-    results = await Promise.all(p.metrics.map(async m => {
-      const d = await jget(`/api/v1/query?project=${encodeURIComponent(p.project)}&metric=${encodeURIComponent(m)}&from=${from}&to=${now}`);
-      return { m, series: d.series && d.series.length ? d.series : [{labels:{},points:d.points}] };
+  try{
+    results = await Promise.all(p.metrics.map(async m=>{
+      const d = await jget('/api/v1/query?project='+encodeURIComponent(p.project)+'&metric='+encodeURIComponent(m)+'&from='+from+'&to='+now);
+      return {m, series: d.series&&d.series.length?d.series:[{labels:{},points:d.points}]};
     }));
-  } catch (e) { return; }
-  let zoom = {};
-  try { const dz = chart.getOption().dataZoom; if (dz && dz[0] && (dz[0].start>0 || dz[0].end<100)) zoom = { start: dz[0].start, end: dz[0].end }; } catch(e){}
-  const flat = [];
-  for (const { m, series } of results) for (const s of series) {
-    const lbl = seriesLabel(s.labels);
-    flat.push({ name: lbl ? m+' {'+lbl+'}' : m, points: aggregate(s.points, p.agg, 200), raw: s.points });
+  }catch(e){ return; }
+  let zoom={};
+  try{ const dz=chart.getOption().dataZoom; if(dz&&dz[0]&&(dz[0].start>0||dz[0].end<100)) zoom={start:dz[0].start,end:dz[0].end}; }catch(e){}
+  const flat=[];
+  for(const {m,series} of results) for(const s of series){
+    const lbl=labelOf(s.labels);
+    flat.push({name:lbl?m+' {'+lbl+'}':m, points:aggregate(s.points,p.agg,200), raw:s.points});
   }
-  const cardsEl = div.parentElement.querySelector('.cards');
-  if (cardsEl) cardsEl.innerHTML = flat.slice(0,6).map(s => {
-    const st = stats(s.raw);
-    return `<div class="card"><div class="k">${esc(s.name)}</div><div class="v">${st?st.last:'—'}</div><div class="k">${st?`min ${st.min} · avg ${st.avg.toFixed(3)} · max ${st.max}`:''}</div></div>`;
+  const cards=div.parentElement.querySelector('.cards');
+  if(cards) cards.innerHTML = flat.slice(0,6).map(s=>{ const st=stats(s.raw);
+    return '<div class="card"><div class="k">'+esc(s.name)+'</div><div class="v">'+(st?st.last:'—')+'</div><div class="k">'+(st?('min '+st.min+' · avg '+st.avg.toFixed(3)+' · max '+st.max):'')+'</div></div>';
   }).join('');
+  const cs = getComputedStyle(document.documentElement);
+  const isLight = state.theme==='light';
   chart.setOption({
     backgroundColor:'transparent', animation:false,
-    textStyle:{ color:'#e2e8f0', fontFamily:'system-ui, sans-serif' },
-    tooltip:{ trigger:'axis', axisPointer:{ type:'cross', label:{show:true} } },
-    legend:{ textStyle:{color:'#e2e8f0'}, top:0 },
+    textStyle:{ color: isLight?'#1a1f26':'#e6edf3', fontFamily:'Roboto, system-ui, sans-serif' },
+    tooltip:{ trigger:'axis', axisPointer:{type:'cross'} },
+    legend:{ textStyle:{color:isLight?'#5a6673':'#9aa7b4'}, top:0, type:'scroll' },
     grid:{ left:56, right:16, top:34, bottom:44 },
-    xAxis:{ type:'time', axisLabel:{color:'#94a3b8'} },
-    yAxis:{ type:'value', scale:true, axisLabel:{color:'#94a3b8'}, splitLine:{lineStyle:{color:'rgba(148,163,184,0.15)'}} },
-    dataZoom:[{type:'inside',xAxisIndex:0,...zoom},{type:'slider',xAxisIndex:0,height:20,bottom:4,textStyle:{color:'#94a3b8'},...zoom}],
-    toolbox:{ show:true, right:4, iconStyle:{borderColor:'#94a3b8'}, feature:{ restore:{title:'reset'}, saveAsImage:{title:'png', backgroundColor:'#1e293b'} } },
-    series: flat.map((s,i) => ({ name:s.name, type:'line', showSymbol:false, sampling:'lttb', emphasis:{focus:'series'},
-      itemStyle:{color:palette(i)}, lineStyle:{color:palette(i), width:1.5}, data:s.points.map(([ts,v])=>[ts*1000,v]) })),
+    xAxis:{ type:'time', axisLabel:{color:isLight?'#5a6673':'#9aa7b4'}, axisLine:{lineStyle:{color:cs.getPropertyValue('--outline')}} },
+    yAxis:{ type:'value', scale:true, axisLabel:{color:isLight?'#5a6673':'#9aa7b4'}, splitLine:{lineStyle:{color:cs.getPropertyValue('--grid')}} },
+    dataZoom:[{type:'inside',xAxisIndex:0,...zoom},{type:'slider',xAxisIndex:0,height:20,bottom:4,textStyle:{color:isLight?'#5a6673':'#9aa7b4'},...zoom}],
+    toolbox:{ show:true, right:4, iconStyle:{borderColor:isLight?'#5a6673':'#9aa7b4'}, feature:{ restore:{title:'reset zoom'}, saveAsImage:{title:'save png', backgroundColor:isLight?'#ffffff':'#161b22'} } },
+    series: flat.map((s,i)=>({ name:s.name, type:'line', showSymbol:false, sampling:'lttb', emphasis:{focus:'series'},
+      itemStyle:{color:palette(i)}, lineStyle:{color:palette(i), width:1.5}, data:s.points.map(([t,v])=>[t*1000,v]) })),
   });
 }
-
-async function refreshLogsPanel(p) {
-  const el = document.querySelector(`.panel[data-id="${p.id}"] .logview`);
-  if (!el) return;
-  const params = new URLSearchParams({ project: p.project, limit: p.limit });
-  if (p.levels) params.set('levels', p.levels);
-  if (p.q) params.set('q', p.q);
-  try {
+async function refreshLogs(p){
+  const el = $('logs-'+p.id); if(!el) return;
+  const params = new URLSearchParams({project:p.project, limit:p.limit||200});
+  if(p.levels) params.set('levels', p.levels);
+  if(p.q) params.set('q', p.q);
+  try{
     const d = await jget('/api/v1/logs?'+params.toString());
-    el.innerHTML = d.lines.map(l =>
-      `<span class="ts">${new Date(l.ts*1000).toLocaleTimeString()}</span> <span class="lv-${esc(l.level)}">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.msg)}`
-    ).join('\n') || '<span class="ts">no lines</span>';
+    el.innerHTML = d.lines.map(l=>'<span class="ts">'+new Date(l.ts*1000).toLocaleTimeString()+'</span> <span class="lv-'+esc(l.level)+'">'+esc(l.level.toUpperCase().padEnd(5))+'</span> '+esc(l.msg)).join('\n') || '<span class="ts">no lines</span>';
     el.scrollTop = el.scrollHeight;
-  } catch (e) { /* keep last view */ }
+  }catch(e){}
 }
-
-function refreshPanel(p) { return p.kind === 'logs' ? refreshLogsPanel(p) : refreshChart(p); }
-async function refreshAll() {
+function refreshPanel(p){ return p.kind==='logs' ? refreshLogs(p) : (p.kind==='both' ? Promise.all([refreshChart(p), refreshLogs(p)]) : refreshChart(p)); }
+async function refreshAll(){
   await loadProjects();
-  await Promise.all(panels.map(refreshPanel));
-  setStatus(panels.length + ' panels');
+  await Promise.all(state.panels.map(refreshPanel));
+  renderTopbar();
+  setStatus(state.panels.length+' panels · '+new Date().toLocaleTimeString());
+}
+$('autoRefresh').onchange = setupTimer;
+function setupTimer(){
+  if(timer) clearInterval(timer);
+  if($('autoRefresh').checked) timer=setInterval(refreshAll,5000);
 }
 
-document.getElementById('editToggle').addEventListener('click', e => {
-  editing = !editing;
-  e.target.classList.toggle('active', editing);
-  renderBoard(); refreshAll();
-});
-document.getElementById('addChart').addEventListener('click', async () => {
-  const project = panels[0]?.project || projectsCache[0] || '';
-  const metrics = project ? (await loadMetricsFor(project)).slice(0,1) : [];
-  panels.push({ id: uid(), kind:'chart', title:'', project, metrics, agg:'raw', levels:'', q:'', limit:200, width:'full' });
-  renderBoard(); saveLayout(); refreshAll();
-});
-document.getElementById('addLogs').addEventListener('click', () => {
-  const project = panels[0]?.project || projectsCache[0] || '';
-  panels.push({ id: uid(), kind:'logs', title:'', project, metrics:[], agg:'raw', levels:'info,warn,error', q:'', limit:200, width:'full' });
-  renderBoard(); saveLayout(); refreshAll();
-});
-document.getElementById('saveNow').addEventListener('click', saveLayout);
-document.getElementById('resetLayout').addEventListener('click', async () => {
-  if (!confirm('Discard the custom layout (panels)? Collected data is kept.')) return;
-  panels = [];
-  charts.forEach(c => c.dispose()); charts.clear();
-  renderBoard(); await saveLayout(); refreshAll();
-});
-document.getElementById('autorefresh').addEventListener('change', setupTimer);
-function setupTimer() {
-  if (timer) clearInterval(timer);
-  if (document.getElementById('autorefresh').checked) timer = setInterval(refreshAll, 5000);
-}
-
-(async () => {
+/* ---------- boot ---------- */
+(async()=>{
+  applyThemeOnce();
   await loadProjects();
-  try {
-    const d = await jget('/api/v1/layout');
-    panels = d.panels || [];
-  } catch (e) { setStatus('layout load failed'); }
-  if (!panels.length) {
-    // first run: seed a useful board from whatever exists
-    const p0 = projectsCache[0];
-    if (p0) {
-      const ms = await loadMetricsFor(p0);
-      panels = [
-        { id: uid(), kind:'chart', title:'', project:p0, metrics: ms.slice(0,3), agg:'raw', levels:'', q:'', limit:200, width:'full' },
-        { id: uid(), kind:'logs', title:'logs', project:p0, metrics:[], agg:'raw', levels:'info,warn,error', q:'', limit:200, width:'full' },
+  try{ const d = await jget('/api/v1/layout'); state.panels = d.panels||[]; }catch(e){}
+  if(!state.panels.length){
+    const p0 = state.projects[0];
+    if(p0){
+      const ms = await metricsFor(p0);
+      state.panels = [
+        {id:uid(),kind:'chart',title:'',project:p0,metrics:ms.slice(0,3),agg:'raw',levels:'info,warn,error',q:'',limit:200,width:'full'},
+        {id:uid(),kind:'logs',title:'logs',project:p0,metrics:[],agg:'raw',levels:'info,warn,error',q:'',limit:200,width:'full'},
       ];
       await saveLayout();
     }
   }
-  for (const p of panels) if (p.project) await loadMetricsFor(p.project);
-  renderBoard();
+  for(const p of state.panels) if(p.project) await metricsFor(p.project);
+  state.selected = state.panels[0]?.id || null;
+  renderBoard(); renderTopbar();
   await refreshAll();
   setupTimer();
+  window.addEventListener('resize', ()=>charts.forEach(c=>c.resize()));
 })();
+function applyThemeOnce(){
+  document.documentElement.dataset.theme = state.theme;
+  $('themeBtn').innerHTML = state.theme==='dark' ? ICON.sun : ICON.moon;
+}
 </script>
 </body>
 </html>
