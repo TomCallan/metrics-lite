@@ -38,7 +38,10 @@
 <header>
   <h1>metrics<span>-lite</span></h1>
   <label>project <select id="project"><option value="">--</option></select></label>
-  <label>metric <select id="metric"><option value="">--</option></select></label>
+  <label>metrics <select id="metric" multiple size="4" title="ctrl/cmd-click for overlay"></select></label>
+  <label>agg <select id="agg" title="bucket aggregation, computed in browser">
+    <option value="raw">raw</option><option value="avg">avg</option><option value="min">min</option><option value="max">max</option>
+  </select></label>
   <span class="row" id="ranges">
     <button data-secs="900">15m</button>
     <button data-secs="3600" class="active">1h</button>
@@ -104,20 +107,25 @@ async function loadProjects() {
   updateSnippet();
 }
 
+function selectedMetrics() {
+  return [...document.getElementById('metric').selectedOptions].map(o => o.value);
+}
+
 async function loadMetrics() {
   const p = document.getElementById('project').value;
   if (!p) return;
   const d = await jget('/api/v1/metrics?project=' + encodeURIComponent(p));
   const sel = document.getElementById('metric');
-  const cur = sel.value;
+  const cur = new Set(selectedMetrics());
   sel.innerHTML = d.metrics.map(m => `<option>${m}</option>`).join('') || '<option value="">--</option>';
-  if (d.metrics.includes(cur)) sel.value = cur;
+  [...sel.options].forEach(o => { if (cur.has(o.value)) o.selected = true; });
+  if (!selectedMetrics().length && sel.options.length) sel.options[0].selected = true;
   updateSnippet();
 }
 
 function updateSnippet() {
   const p = document.getElementById('project').value || 'demo';
-  const m = document.getElementById('metric').value || 'live_equity';
+  const m = selectedMetrics()[0] || 'live_equity';
   document.getElementById('snippet').textContent =
 `# JSON push
 curl -X POST http://host:3100/api/v1/push/${p} \\
@@ -180,26 +188,62 @@ function ensureChart() {
   return true;
 }
 
+// Bucket points into N time buckets with min/max/avg. All client-side: no server cost.
+function aggregate(points, mode, buckets) {
+  if (mode === 'raw' || points.length < 2) return points;
+  const t0 = points[0][0], t1 = points[points.length - 1][0];
+  if (t1 <= t0) return points;
+  const width = (t1 - t0) / buckets;
+  const acc = new Map();
+  for (const [ts, v] of points) {
+    const b = Math.min(buckets - 1, Math.floor((ts - t0) / width));
+    let a = acc.get(b);
+    if (!a) { a = { n: 0, sum: 0, min: v, max: v, t: t0 + (b + 0.5) * width }; acc.set(b, a); }
+    a.n++; a.sum += v; if (v < a.min) a.min = v; if (v > a.max) a.max = v;
+  }
+  return [...acc.values()].map(a => [Math.round(a.t), mode === 'avg' ? a.sum / a.n : a[mode]]);
+}
+
+function stats(points) {
+  if (!points.length) return null;
+  let mn = Infinity, mx = -Infinity, sum = 0;
+  for (const [, v] of points) { if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
+  return { last: points[points.length - 1][1], min: mn, max: mx, avg: sum / points.length };
+}
+
 async function refresh(resetZoom) {
   const p = document.getElementById('project').value;
-  const m = document.getElementById('metric').value;
-  if (!p || !m) { document.getElementById('status').textContent = 'select project + metric'; return; }
+  const metrics = selectedMetrics();
+  if (!p || !metrics.length) { document.getElementById('status').textContent = 'select project + metric(s)'; return; }
   const now = Math.floor(Date.now() / 1000);
   const from = rangeSecs === 0 ? 0 : now - rangeSecs;
-  const url = `/api/v1/query?project=${encodeURIComponent(p)}&metric=${encodeURIComponent(m)}&from=${from}&to=${now}`;
-  let d;
-  try { d = await jget(url); }
-  catch (e) { document.getElementById('status').textContent = 'query error: ' + e.message; return; }
-  const series = d.series && d.series.length ? d.series : [{ labels: {}, points: d.points }];
-  document.getElementById('status').textContent = `${series.length} series, updated ${new Date().toLocaleTimeString()}`;
-  document.getElementById('series').textContent = series.map(s => JSON.stringify(s.labels) + ' n=' + s.points.length).join('\n');
-  // latest-value cards
-  const cards = series.map(s => {
-    const last = s.points.length ? s.points[s.points.length - 1] : null;
-    const lbl = Object.entries(s.labels).map(([k, v]) => k + '=' + v).join(',') || '(no labels)';
-    const prev = s.points.length > 1 ? s.points[s.points.length - 2][1] : null;
-    const delta = (last && prev !== null) ? ` <span style="font-size:12px;color:#94a3b8">(Δ ${last[1] - prev})</span>` : '';
-    return `<div class="card"><div class="k">${m} {${lbl}}</div><div class="v">${last ? last[1] : '—'}${delta}</div></div>`;
+  const agg = document.getElementById('agg').value;
+  let results;
+  try {
+    results = await Promise.all(metrics.map(async m => {
+      const url = `/api/v1/query?project=${encodeURIComponent(p)}&metric=${encodeURIComponent(m)}&from=${from}&to=${now}`;
+      const d = await jget(url);
+      return { metric: m, series: d.series && d.series.length ? d.series : [{ labels: {}, points: d.points }] };
+    }));
+  } catch (e) { document.getElementById('status').textContent = 'query error: ' + e.message; return; }
+  // flatten to overlay list with per-metric names, aggregated client-side
+  const flat = [];
+  for (const { metric, series } of results) {
+    for (const s of series) {
+      const lbl = seriesLabel(s, '');
+      const pts = aggregate(s.points, agg, 200);
+      flat.push({ name: lbl ? metric + ' {' + lbl + '}' : metric, points: pts, raw: s.points });
+    }
+  }
+  const totalPts = flat.reduce((n, s) => n + s.points.length, 0);
+  document.getElementById('status').textContent = `${flat.length} series, ${totalPts} pts, updated ${new Date().toLocaleTimeString()}`;
+  document.getElementById('series').textContent = flat.map(s => s.name + ' n=' + s.points.length).join('\n');
+  // cards: latest + min/max/avg over the raw window
+  const cards = flat.map(s => {
+    const st = stats(s.raw);
+    const lbl = esc(s.name);
+    const detail = st ? `min ${st.min} · avg ${st.avg.toFixed(4)} · max ${st.max}` : '';
+    return `<div class="card"><div class="k">${lbl}</div><div class="v">${st ? st.last : '—'}</div><div class="k">${detail}</div></div>`;
   }).join('');
   document.getElementById('cards').innerHTML = cards;
   // chart
@@ -215,13 +259,13 @@ async function refresh(resetZoom) {
     } catch (e) { /* fresh chart, nothing to preserve */ }
   }
   chart.setOption({
-    legend: { data: series.map(s => seriesLabel(s, m)) },
+    legend: { data: flat.map(s => s.name) },
     dataZoom: [
       { type: 'inside', xAxisIndex: 0, filterMode: 'none', ...zoomOpt },
       { type: 'slider', xAxisIndex: 0, filterMode: 'none', height: 24, bottom: 8, textStyle: { color: '#94a3b8' }, ...zoomOpt },
     ],
-    series: series.map((s, i) => ({
-      name: seriesLabel(s, m),
+    series: flat.map((s, i) => ({
+      name: s.name,
       type: 'line',
       showSymbol: false,
       sampling: 'lttb',
@@ -233,8 +277,11 @@ async function refresh(resetZoom) {
   });
 }
 
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
 document.getElementById('project').addEventListener('change', async () => { await loadMetrics(); await refresh(true); });
 document.getElementById('metric').addEventListener('change', () => refresh(true));
+document.getElementById('agg').addEventListener('change', () => refresh(false));
 document.getElementById('ranges').addEventListener('click', e => {
   if (e.target.tagName !== 'BUTTON') return;
   document.querySelectorAll('#ranges button').forEach(b => b.classList.remove('active'));

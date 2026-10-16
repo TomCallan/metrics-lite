@@ -121,6 +121,10 @@ struct Args {
     /// Optional "proj:tok,proj2:tok2". Env METRICS_TOKENS. Prefix with @ to read from file.
     #[arg(long, env = "METRICS_TOKENS", default_value = "")]
     tokens: String,
+    /// Two-way scrape targets: "proj=url,secs;proj2=url2,secs" (env SCRAPE_TARGETS).
+    /// Pulls Prometheus exposition into each project every N seconds.
+    #[arg(long, env = "SCRAPE_TARGETS", default_value = "")]
+    scrape: String,
 }
 
 fn parse_tokens(s: &str) -> HashMap<String, String> {
@@ -178,6 +182,29 @@ fn check_token(
 
 fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+/// Parse scrape targets: "proj=url,secs;proj2=url2,secs" (secs default 30).
+fn parse_scrape_targets(s: &str) -> Vec<(String, String, u64)> {
+    let mut out = Vec::new();
+    for part in s.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (proj, rest) = match part.split_once('=') {
+            Some(p) => p,
+            None => continue,
+        };
+        let (url, secs) = match rest.rsplit_once(',') {
+            Some((u, n)) => (u.trim(), n.trim().parse::<u64>().unwrap_or(30).clamp(5, 3600)),
+            None => (rest.trim(), 30),
+        };
+        if !proj.trim().is_empty() && !url.is_empty() {
+            out.push((proj.trim().to_string(), url.to_string(), secs));
+        }
+    }
+    out
 }
 
 /// Parse Prometheus/OpenMetrics text: `name{labels} value [ts]` lines. Ignore # comments.
@@ -1030,6 +1057,48 @@ async fn main() {
 
     load_snapshot(&state.store, &state.data_dir).await;
 
+    // background: scrape targets (two-way: dashboard pulls Prometheus endpoints)
+    for (project, url, secs) in parse_scrape_targets(&args.scrape) {
+        let store = state.store.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .user_agent("metrics-lite/1.0")
+                .build();
+            let client = match client {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("scrape {project}: client build failed: {e}");
+                    return;
+                }
+            };
+            let mut t = tokio::time::interval(Duration::from_secs(secs));
+            loop {
+                t.tick().await;
+                match client.get(&url).send().await {
+                    Err(e) => tracing::warn!("scrape {project} {url}: {e}"),
+                    Ok(r) => match r.text().await {
+                        Err(e) => tracing::warn!("scrape {project} {url}: read: {e}"),
+                        Ok(text) => {
+                            let now = now_ts();
+                            let rows = parse_prometheus_text(&text, &project, now);
+                            if rows.is_empty() {
+                                tracing::warn!("scrape {project} {url}: no rows parsed");
+                            } else {
+                                let mut store = store.write().await;
+                                for (metric, labels, ts, value) in rows {
+                                    if value.is_finite() {
+                                        store.insert(&project, &metric, labels, ts, value);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        });
+    }
+
     // background: retention prune + periodic snapshot
     {
         let store = state.store.clone();
@@ -1180,6 +1249,19 @@ mod tests {
         assert_eq!(split_level_prefix("INFO up"), ("info".into(), "up".into()));
         assert_eq!(split_level_prefix("plain line"), ("info".into(), "plain line".into()));
         assert_eq!(split_level_prefix("WARNING: x"), ("info".into(), "WARNING: x".into()));
+    }
+
+    #[test]
+    fn scrape_targets_parse() {
+        let v = parse_scrape_targets("a=http://h:1/m,30;b=http://h:2/m");
+        assert_eq!(v, vec![
+            ("a".to_string(), "http://h:1/m".to_string(), 30),
+            ("b".to_string(), "http://h:2/m".to_string(), 30),
+        ]);
+        assert!(parse_scrape_targets("").is_empty());
+        assert!(parse_scrape_targets("noequals").is_empty());
+        let v = parse_scrape_targets("a=http://h/m,2");
+        assert_eq!(v[0].2, 5); // clamped to minimum
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # metrics-lite
 
-Single-binary, lightweight Grafana replacement (v1: push + charts).
+Single-binary, lightweight Grafana replacement (v1: push + charts + scrape).
 Multi-project push ingest, Prometheus scrape compat, and a zero-config web chart UI.
-Far lighter than prometheus (512 MB limit) + grafana (512 MB limit):
+Far lighter than a Prometheus + Grafana pair on a small box:
 **~5 MB RSS idle, 4.3 MB binary.**
 
 ## Build
@@ -19,6 +19,8 @@ cargo test                   # 8 unit tests
 ./target/release/metrics-lite --port 3100 --bind 0.0.0.0 --data-dir ./data --retention-hours 24
 # env equivalents: PORT BIND DATA_DIR RETENTION_HOURS METRICS_TOKENS
 # tokens: --tokens "proj1:tok1,proj2:tok2"  (or METRICS_TOKENS; @/path/to/file; METRICS_TOKENS_FILE)
+# scrape (two-way): --scrape "proj=http://127.0.0.1:9103/metrics,30;other=http://127.0.0.1:9200/metrics,60"
+#   pulls Prometheus exposition into a project every N seconds (or SCRAPE_TARGETS)
 ```
 
 Open **http://host:3100** → select project + metric → chart. No config needed.
@@ -134,37 +136,27 @@ WorkingDirectory=/opt/apps/metrics-lite
 WantedBy=multi-user.target
 ```
 
-## Migration notes
+## Replacing Prometheus/Grafana
 
-Point push clients (e.g. `velotrade-rs`, `drivecost`) at it instead of running a
-Prometheus client port per app:
+Point push clients at metrics-lite instead of running a Prometheus client
+port per app:
 
 ```bash
-# instead of :9101/metrics scrape only, also push live values:
-curl -X POST http://host:3100/api/v1/push/velotrade-bot \
+curl -X POST http://host:3100/api/v1/push/myapp \
   -H 'Content-Type: application/json' \
   -d '{"metric":"feed_mid","value":2650.1,"labels":{"symbol":"XAU"}}'
 ```
 
-During migration, keep the existing Prometheus scraping working by adding a scrape
-target for metrics-lite — it re-exposes every stored latest value:
+Two-way options per source — pick one:
 
-```yaml
-# /opt/infra/monitoring/targets/metrics-lite.json
-[{"targets": ["host.docker.internal:3100"], "labels": {"app": "metrics-lite"}}]
-```
+- **Push** (shown above, plus `scripts/mlpush` for pipes and
+  `scripts/push-journal-logs` for journals).
+- **Scrape**: point metrics-lite at an existing Prometheus `/metrics`
+  endpoint and it pulls on an interval (see `--scrape` under Run).
 
-`lite_push_value{project="velotrade-bot",metric="feed_mid",symbol="XAU"}` then shows
-up in Prometheus/Grafana alongside native `feed_*` series until you cut over.
-
-Port table:
-
-| Port | Service |
-|---|---|
-| 3000 | grafana (legacy, to retire) |
-| 9090 | prometheus (legacy, scrape during migration) |
-| 91xx | per-app `/metrics` (e.g. 9101 velotrade-bot `feed_*`) |
-| **3100** | **metrics-lite UI + push API + `/metrics` for scraping** |
+During migration, existing Prometheus setups can scrape metrics-lite itself —
+it re-exposes every stored latest value as
+`lite_push_value{project="..",metric="..",...}`.
 
 ## Memory comparison
 
