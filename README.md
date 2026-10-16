@@ -69,6 +69,24 @@ Notes: no body-size cap on `/api/v1/push` (local daemon); gzip typically 10x
 (measured: 100k points, 8.3MB -> 564KB, stored in 0.26s). Per-series ring
 holds the latest 50k points; retention prunes past 24h.
 
+## Logs
+
+```bash
+# JSON / JSONL ({"level":"info|warn|error|debug","msg":"...","ts"?}) or plain text
+curl -X POST http://host:3100/api/v1/logs/demo \
+  -H 'Content-Type: application/json' -d '{"level":"error","msg":"order rejected"}'
+printf 'WARN tick gap\nplain line\n' | curl -X POST http://host:3100/api/v1/logs/demo --data-binary @-
+# gzip + tokens work the same as /api/v1/push
+
+# query: levels=info,warn,error q=<substring> from/to limit=<1..5000>
+curl 'http://host:3100/api/v1/logs?project=demo&levels=warn,error&q=gap&limit=200'
+```
+
+UI: `charts | logs` tabs — level checkboxes, text filter, pause, tail view.
+`scripts/push-journal-logs <unit> <project>` forwards a systemd unit's journal
+(cursor-based, 30s timer pattern; see `apps-velotrade-logs.timer`). Logs are
+in-memory only (5k lines/project, same 24h prune) — not in snapshots.
+
 ## Query examples
 
 ```bash

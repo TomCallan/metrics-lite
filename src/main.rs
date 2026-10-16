@@ -21,6 +21,7 @@ use tracing::warn;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const MAX_POINTS_PER_SERIES: usize = 50_000;
+const MAX_LOG_LINES_PER_PROJECT: usize = 5_000;
 
 type Labels = BTreeMap<String, String>;
 
@@ -31,9 +32,17 @@ struct SeriesKey {
     labels: Labels,
 }
 
+#[derive(Clone, Debug)]
+struct LogEntry {
+    ts: i64,
+    level: String,
+    msg: String,
+}
+
 #[derive(Default)]
 struct Store {
     series: HashMap<SeriesKey, VecDeque<(i64, f64)>>,
+    logs: HashMap<String, VecDeque<LogEntry>>,
 }
 
 impl Store {
@@ -54,12 +63,32 @@ impl Store {
         self.series.values().map(|q| q.len() as u64).sum()
     }
 
+    fn log(&mut self, project: &str, ts: i64, level: String, msg: String) {
+        let q = self.logs.entry(project.to_string()).or_default();
+        q.push_back(LogEntry { ts, level, msg });
+        while q.len() > MAX_LOG_LINES_PER_PROJECT {
+            q.pop_front();
+        }
+    }
+
+    fn total_log_lines(&self) -> u64 {
+        self.logs.values().map(|q| q.len() as u64).sum()
+    }
+
     /// Remove points older than `cutoff` (epoch secs). Returns removed count.
     fn prune(&mut self, cutoff: i64) -> usize {
         let mut removed = 0;
         self.series.retain(|_, q| {
             let before = q.len();
             while q.front().map(|(ts, _)| *ts < cutoff).unwrap_or(false) {
+                q.pop_front();
+            }
+            removed += before - q.len();
+            !q.is_empty()
+        });
+        self.logs.retain(|_, q| {
+            let before = q.len();
+            while q.front().map(|e| e.ts < cutoff).unwrap_or(false) {
                 q.pop_front();
             }
             removed += before - q.len();
@@ -468,6 +497,227 @@ async fn post_push(
     Json(PushResp { ok: true, stored }).into_response()
 }
 
+// ---------- log ingest ----------
+
+fn valid_level(s: &str) -> bool {
+    matches!(s, "debug" | "info" | "warn" | "error")
+}
+
+/// Shared gzip handling for push bodies. Returns the raw bytes or a 400 response.
+fn decode_push_body(headers: &HeaderMap, body: Bytes) -> Result<Vec<u8>, Response> {
+    if headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(',')
+        .any(|e| e.trim().eq_ignore_ascii_case("gzip"))
+    {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+        let mut dec = GzDecoder::new(&body[..]);
+        let mut out = Vec::new();
+        if dec.read_to_end(&mut out).is_err() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"ok": false, "error": "invalid gzip body"})),
+            )
+                .into_response());
+        }
+        Ok(out)
+    } else {
+        Ok(body.to_vec())
+    }
+}
+
+#[derive(Deserialize)]
+struct LogPush {
+    #[serde(default = "default_info_level")]
+    level: String,
+    msg: String,
+    #[serde(default)]
+    ts: Option<f64>,
+}
+
+fn default_info_level() -> String {
+    "info".to_string()
+}
+
+#[derive(Serialize)]
+struct LogResp {
+    ok: bool,
+    stored: usize,
+}
+
+#[derive(Serialize)]
+struct LogLine {
+    ts: i64,
+    level: String,
+    msg: String,
+}
+
+/// Split "LEVEL rest" prefixes (INFO/WARN/ERROR/DEBUG, any case) from journal-style lines.
+fn split_level_prefix(line: &str) -> (String, String) {
+    let t = line.trim_start();
+    if let Some(i) = t.find(|c: char| c == ' ' || c == ':') {
+        let (lvl, rest) = t.split_at(i);
+        let l = lvl.to_lowercase();
+        if valid_level(&l) {
+            let msg = rest.trim_start_matches([' ', ':']).trim_start().to_string();
+            if !msg.is_empty() {
+                return (l, msg);
+            }
+        }
+    }
+    ("info".to_string(), line.trim().to_string())
+}
+
+async fn post_logs(
+    State(st): State<AppState>,
+    Path(project): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let header_token = headers
+        .get("x-api-token")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let query_token = q.get("token").cloned();
+    if !check_token(
+        &st.tokens,
+        &project,
+        header_token.as_deref(),
+        query_token.as_deref(),
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"ok": false, "error": "bad or missing token"})),
+        )
+            .into_response();
+    }
+    let now = now_ts();
+    let body = match decode_push_body(&headers, body) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let text = String::from_utf8_lossy(&body).into_owned();
+    // JSON single/array/JSONL, else plain-text lines (one log per line).
+    let mut entries: Vec<(i64, String, String)> = Vec::new();
+    if ct.contains("ndjson") || ct.contains("jsonl") || ct.contains("json-lines") {
+        for (n, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<LogPush>(line) {
+                Ok(s) => entries.push((
+                    s.ts.map(|t| t as i64).unwrap_or(now),
+                    s.level.to_lowercase(),
+                    s.msg,
+                )),
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"ok": false, "error": format!("invalid JSON on line {}", n + 1)})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    } else if let Ok(s) = serde_json::from_str::<LogPush>(&text) {
+        entries.push((s.ts.map(|t| t as i64).unwrap_or(now), s.level.to_lowercase(), s.msg));
+    } else if let Ok(arr) = serde_json::from_str::<Vec<LogPush>>(&text) {
+        for s in arr {
+            entries.push((s.ts.map(|t| t as i64).unwrap_or(now), s.level.to_lowercase(), s.msg));
+        }
+    } else if !(text.trim_start().starts_with('{') || text.trim_start().starts_with('[')) {
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let (level, msg) = split_level_prefix(line);
+            entries.push((now, level, msg));
+        }
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": "invalid JSON log body"})),
+        )
+            .into_response();
+    }
+    let mut stored = 0usize;
+    let mut store = st.store.write().await;
+    for (ts, level, msg) in entries {
+        let level = if valid_level(&level) { level } else { "info".to_string() };
+        if msg.len() > 8192 {
+            continue;
+        }
+        store.log(&project, ts, level, msg);
+        stored += 1;
+    }
+    Json(LogResp { ok: true, stored }).into_response()
+}
+
+async fn get_logs(Query(q): Query<HashMap<String, String>>, State(st): State<AppState>) -> Response {
+    let project = match q.get("project") {
+        Some(p) if !p.is_empty() => p.clone(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing ?project="})),
+            )
+                .into_response();
+        }
+    };
+    let levels: Option<HashSet<String>> = q.get("levels").map(|s| {
+        s.split(',').map(|x| x.trim().to_lowercase()).collect()
+    });
+    let substr = q.get("q").cloned().unwrap_or_default().to_lowercase();
+    let from = q.get("from").and_then(|s| s.parse::<i64>().ok());
+    let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(500)
+        .min(5000)
+        .max(1);
+    let store = st.store.read().await;
+    let mut out: Vec<LogLine> = Vec::new();
+    if let Some(lines) = store.logs.get(&project) {
+        for e in lines.iter().rev() {
+            if out.len() >= limit {
+                break;
+            }
+            if let Some(f) = from {
+                if e.ts < (if f < 0 { now_ts() + f } else { f }) {
+                    continue;
+                }
+            }
+            if let Some(t) = to {
+                if e.ts > t {
+                    continue;
+                }
+            }
+            if let Some(lv) = &levels {
+                if !lv.contains(&e.level) {
+                    continue;
+                }
+            }
+            if !substr.is_empty() && !e.msg.to_lowercase().contains(&substr) {
+                continue;
+            }
+            out.push(LogLine { ts: e.ts, level: e.level.clone(), msg: e.msg.clone() });
+        }
+        out.reverse();
+    }
+    Json(serde_json::json!({"project": project, "lines": out})).into_response()
+}
+
 async fn get_query(
     State(st): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -563,6 +813,9 @@ async fn get_projects(State(st): State<AppState>) -> impl IntoResponse {
     for k in store.series.keys() {
         set.insert(k.project.clone());
     }
+    for p in store.logs.keys() {
+        set.insert(p.clone());
+    }
     let mut v: Vec<String> = set.into_iter().collect();
     v.sort();
     Json(serde_json::json!({"projects": v}))
@@ -601,6 +854,8 @@ async fn get_prom(State(st): State<AppState>) -> Response {
     out.push_str(&format!("lite_series_count {}\n", store.series.len()));
     out.push_str("# HELP lite_push_points_total total points stored\n# TYPE lite_push_points_total counter\n");
     out.push_str(&format!("lite_push_points_total {}\n", store.total_points()));
+    out.push_str("# HELP lite_log_lines_total total log lines stored\n# TYPE lite_log_lines_total counter\n");
+    out.push_str(&format!("lite_log_lines_total {}\n", store.total_log_lines()));
     out.push_str(&format!(
         "# HELP lite_uptime_seconds seconds since start\n# TYPE lite_uptime_seconds counter\nlite_uptime_seconds {}\n",
         now_ts() - st.started_ts
@@ -810,6 +1065,8 @@ async fn main() {
         .route("/healthz", get(get_healthz))
         .route("/metrics", get(get_prom))
         .route("/api/v1/push/:project", axum::routing::post(post_push))
+        .route("/api/v1/logs/:project", axum::routing::post(post_logs))
+        .route("/api/v1/logs", get(get_logs))
         .route("/api/v1/query", get(get_query))
         .route("/api/v1/projects", get(get_projects))
         .route("/api/v1/metrics", get(get_metrics))
@@ -914,5 +1171,28 @@ mod tests {
         assert_eq!(m.get("proj1").unwrap(), "tok1");
         assert_eq!(m.get("proj2").unwrap(), "tok2");
         assert!(parse_tokens("").is_empty());
+    }
+
+    #[test]
+    fn log_level_prefix() {
+        assert_eq!(split_level_prefix("WARN something broke"), ("warn".into(), "something broke".into()));
+        assert_eq!(split_level_prefix("ERROR: boom"), ("error".into(), "boom".into()));
+        assert_eq!(split_level_prefix("INFO up"), ("info".into(), "up".into()));
+        assert_eq!(split_level_prefix("plain line"), ("info".into(), "plain line".into()));
+        assert_eq!(split_level_prefix("WARNING: x"), ("info".into(), "WARNING: x".into()));
+    }
+
+    #[test]
+    fn log_store_and_cap() {
+        let mut s = Store::default();
+        s.log("p", 100, "info".into(), "a".into());
+        s.log("p", 200, "error".into(), "b".into());
+        assert_eq!(s.total_log_lines(), 2);
+        for i in 0..(MAX_LOG_LINES_PER_PROJECT + 10) {
+            s.log("p", 300 + i as i64, "info".into(), "x".into());
+        }
+        assert_eq!(s.logs.get("p").unwrap().len(), MAX_LOG_LINES_PER_PROJECT);
+        let n = s.prune(300 + MAX_LOG_LINES_PER_PROJECT as i64);
+        assert!(n > 0);
     }
 }

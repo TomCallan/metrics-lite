@@ -22,6 +22,15 @@
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #status { font-size: 12px; color: #94a3b8; }
   #hint { font-size: 12px; color: #64748b; margin-top: 8px; }
+  #logpane { display: none; }
+  #logcontrols { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
+  #logcontrols input[type="text"], #logcontrols select { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 10px; }
+  #logview { background: #020617; border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, monospace; font-size: 12px; max-height: 560px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  #logview .ts { color: #64748b; }
+  #logview .lv-info { color: #94a3b8; }
+  #logview .lv-warn { color: #fbbf24; }
+  #logview .lv-error { color: #f87171; font-weight: 700; }
+  #logview .lv-debug { color: #22d3ee; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 </head>
@@ -38,12 +47,29 @@
     <button data-secs="0">all</button>
   </span>
   <label><input type="checkbox" id="autorefresh" checked> auto 5s</label>
+  <span class="row" id="tabs">
+    <button data-view="charts" class="active">charts</button>
+    <button data-view="logs">logs</button>
+  </span>
   <span id="status"></span>
 </header>
 <main>
   <div id="cards"></div>
   <div id="chartWrap"><div id="chart"></div></div>
   <div id="hint">hover for crosshair + values &bull; scroll to zoom &bull; drag to pan &bull; slider below for range &bull; toolbox for zoom-select / restore / save</div>
+  <div id="logpane">
+    <div id="logcontrols">
+      <label><input type="checkbox" class="lvf" value="debug"> debug</label>
+      <label><input type="checkbox" class="lvf" value="info" checked> info</label>
+      <label><input type="checkbox" class="lvf" value="warn" checked> warn</label>
+      <label><input type="checkbox" class="lvf" value="error" checked> error</label>
+      <input type="text" id="logq" placeholder="filter text…">
+      <label>lines <select id="loglimit"><option>200</option><option selected>500</option><option>1000</option><option>2000</option></select></label>
+      <label><input type="checkbox" id="logpause"> pause</label>
+    </div>
+    <div id="logview"></div>
+    <div id="hint">push via POST /api/v1/logs/&lt;project&gt; (JSON, JSONL, or plain text lines) &bull; newest at bottom</div>
+  </div>
   <h3>Push examples</h3>
   <pre id="snippet"></pre>
   <h3>Series</h3>
@@ -219,8 +245,52 @@ document.getElementById('ranges').addEventListener('click', e => {
 document.getElementById('autorefresh').addEventListener('change', setupTimer);
 function setupTimer() {
   if (timer) clearInterval(timer);
-  if (document.getElementById('autorefresh').checked) timer = setInterval(() => refresh(false), 5000);
+  if (document.getElementById('autorefresh').checked) timer = setInterval(tick, 5000);
 }
+function tick() {
+  if (currentView === 'logs') refreshLogs();
+  else refresh(false);
+}
+
+let currentView = 'charts';
+document.getElementById('tabs').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  currentView = e.target.dataset.view;
+  const logs = currentView === 'logs';
+  document.getElementById('logpane').style.display = logs ? 'block' : 'none';
+  document.getElementById('chartWrap').style.display = logs ? 'none' : 'block';
+  document.getElementById('cards').style.display = logs ? 'none' : 'flex';
+  if (logs) refreshLogs();
+  else { if (chart) chart.resize(); refresh(false); }
+});
+
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+async function refreshLogs() {
+  const p = document.getElementById('project').value;
+  if (!p) { document.getElementById('status').textContent = 'select project'; return; }
+  if (document.getElementById('logpause').checked) return;
+  const levels = [...document.querySelectorAll('.lvf:checked')].map(c => c.value).join(',');
+  const q = document.getElementById('logq').value;
+  const limit = document.getElementById('loglimit').value;
+  const params = new URLSearchParams({ project: p, limit });
+  if (levels) params.set('levels', levels);
+  if (q) params.set('q', q);
+  let d;
+  try { d = await jget('/api/v1/logs?' + params.toString()); }
+  catch (e) { document.getElementById('status').textContent = 'logs error: ' + e.message; return; }
+  const view = document.getElementById('logview');
+  view.innerHTML = d.lines.map(l =>
+    `<span class="ts">${new Date(l.ts * 1000).toLocaleTimeString()}</span> <span class="lv-${esc(l.level)}">${esc(l.level.toUpperCase().padEnd(5))}</span> ${esc(l.msg)}`
+  ).join('\n') || '<span class="ts">no lines (push via POST /api/v1/logs/' + esc(p) + ')</span>';
+  view.scrollTop = view.scrollHeight;
+  document.getElementById('status').textContent = `${d.lines.length} lines, updated ${new Date().toLocaleTimeString()}`;
+}
+document.getElementById('logq').addEventListener('input', () => refreshLogs());
+document.querySelectorAll('.lvf').forEach(c => c.addEventListener('change', () => refreshLogs()));
+document.getElementById('loglimit').addEventListener('change', () => refreshLogs());
 
 (async () => {
   await loadProjects();

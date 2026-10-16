@@ -1,0 +1,45 @@
+#!/bin/bash
+# push-journal-logs — forward new journal lines for a unit into metrics-lite logs.
+#
+# Usage: push-journal-logs <unit> <project> [--host URL] [--token T]
+# State: /var/tmp/push-journal-logs.<unit>.cursor (journal cursor, survives restarts)
+# Timer pairing: apps-<name>-logs.service (oneshot) + .timer every 30s.
+#
+# Maps journal PRIORITY: 0-3 -> error, 4 -> warn, 5-6 -> info, 7 -> debug.
+set -u
+UNIT="${1:?usage: push-journal-logs <unit> <project>}"
+PROJECT="${2:?usage: push-journal-logs <unit> <project>}"
+HOST="${ML_HOST:-http://127.0.0.1:3100}"
+TOKEN="${ML_TOKEN:-}"
+[[ "${3:-}" == "--host" ]] && HOST="$4"
+[[ "${3:-}" == "--token" ]] && TOKEN="$4"
+[[ "${5:-}" == "--host" ]] && HOST="$6"
+[[ "${5:-}" == "--token" ]] && TOKEN="$6"
+
+CURSOR="/var/tmp/push-journal-logs.${UNIT//\//_}.cursor"
+ARGS=(--after-cursor "$(cat "$CURSOR" 2>/dev/null || true)")
+if [[ ! -s "$CURSOR" ]]; then
+  ARGS=(--since "5 min ago")  # first run: recent context only, not full history
+fi
+OUT="$(journalctl -q -u "$UNIT" -o short-iso -p info "${ARGS[@]}" --no-pager 2>/dev/null | tail -n 500)"
+[[ -z "$OUT" ]] && exit 0
+printf '%s\n' "$OUT" | python3 -c "
+import sys, json, re
+for line in sys.stdin:
+    line = line.rstrip('\n')
+    if not line: continue
+    m = re.match(r'^(\S+)\s+\S+\s+([\w\-\./]+)\[(\d+)\]:\s*(.*)$', line)
+    if not m: continue
+    ts_s, _host, _tag, msg = m.groups()
+    import datetime
+    try: ts = int(datetime.datetime.fromisoformat(ts_s).timestamp())
+    except Exception: continue
+    low = msg.lower()
+    if low.startswith(('error', 'fail', 'reject', 'panic')): lvl = 'error'
+    elif low.startswith(('warn', 'orphan', 'no ', 'could not', 'socket dropped', 'sync failed')): lvl = 'warn'
+    else: lvl = 'info'
+    print(json.dumps({'level': lvl, 'msg': msg[:2000], 'ts': ts}))
+" | curl -s --max-time 30 -X POST "$HOST/api/v1/logs/$PROJECT" \
+    ${TOKEN:+-H "X-API-Token: $TOKEN"} \
+    -H 'Content-Type: application/x-ndjson' --data-binary @- | grep -q '"ok":true' \
+  && journalctl -q -u "$UNIT" -o cat --show-cursor -n0 --no-pager 2>/dev/null | tail -n 1 > "$CURSOR"
