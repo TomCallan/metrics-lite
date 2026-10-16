@@ -1,0 +1,71 @@
+#!/bin/bash
+# mlpush — pipe data into metrics-lite:  prog | mlpush <project>
+#
+# Reads stdin (JSON object, JSON array, JSONL, or Prometheus text),
+# gzips payloads over 64KB, and POSTs to the dashboard. Prints {"ok","stored"}.
+#
+# Usage:
+#   some-producer | mlpush myproject
+#   mlpush myproject --format ndjson < bulk.jsonl
+#   cat batch.json | mlpush myproject --host http://other:3100 --token SECRET
+#
+# Formats: auto (default), json, ndjson, prom
+set -euo pipefail
+
+HOST="${ML_HOST:-http://127.0.0.1:3100}"
+FORMAT="auto"
+TOKEN="${ML_TOKEN:-}"
+PROJECT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --format) FORMAT="$2"; shift 2 ;;
+    --token) TOKEN="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    *) PROJECT="$1"; shift ;;
+  esac
+done
+
+if [[ -z "$PROJECT" ]]; then
+  echo "usage: <producer> | mlpush <project> [--format auto|json|ndjson|prom] [--host URL] [--token T]" >&2
+  exit 1
+fi
+
+TMP="$(mktemp)"; trap 'rm -f "$TMP" "$TMP.gz"' EXIT
+cat > "$TMP"
+
+if [[ "$FORMAT" == "auto" ]]; then
+  FIRST="$(head -c 1 "$TMP")"
+  if [[ "$FIRST" == "{" || "$FIRST" == "[" ]]; then
+    # single doc vs stream: valid single JSON doc -> json, else ndjson
+    if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$TMP" 2>/dev/null; then
+      FORMAT="json"
+    else
+      FORMAT="ndjson"
+    fi
+  else
+    FORMAT="prom"
+  fi
+fi
+
+case "$FORMAT" in
+  json) CT="application/json" ;;
+  ndjson) CT="application/x-ndjson" ;;
+  prom) CT="text/plain" ;;
+  *) echo "unknown format: $FORMAT" >&2; exit 1 ;;
+esac
+
+CURL_ARGS=(-s --max-time 300 -X POST "$HOST/api/v1/push/$PROJECT"
+  -H "Content-Type: $CT")
+[[ -n "$TOKEN" ]] && CURL_ARGS+=(-H "X-API-Token: $TOKEN")
+
+SIZE="$(wc -c < "$TMP")"
+if [[ "$SIZE" -gt 65536 ]]; then
+  gzip -c "$TMP" > "$TMP.gz"
+  echo "gzipped $SIZE -> $(wc -c < "$TMP.gz") bytes" >&2
+  curl "${CURL_ARGS[@]}" -H 'Content-Encoding: gzip' --data-binary "@$TMP.gz"
+else
+  curl "${CURL_ARGS[@]}" --data-binary "@$TMP"
+fi
+echo
